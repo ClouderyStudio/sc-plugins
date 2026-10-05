@@ -23,6 +23,7 @@
 !/.buildtools/check-sources.py
 !/.buildtools/publish-release.py
 !/.buildtools/publish-to-scforge.py
+!/.buildtools/verify-scforge-slugs.py
 !/.buildtools/release-manifest.json
 
 # ---- 开源插件（每个一个子文件夹）----
