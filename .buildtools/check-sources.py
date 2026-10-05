@@ -163,11 +163,32 @@ def manifest_paths():
     return [a if isinstance(a, str) else a['File'] for a in assets]
 
 
+def manifest_plugins():
+    """返回 [(插件名, Scforge 配方 or None)]，检查 Scforge 段与 Assets 是否对得上。
+
+    为什么值得单独查：Scforge 段是 publish-to-scforge.py 的输入，用插件**中文名**做键。
+    新增插件时只往 Assets 加一行、忘了补 Scforge 配方，脚本会静默跳过那个插件 ——
+    表现是「CI 全绿但平台上少了一个资源」，最难查。这里提前拦下。
+    """
+    path = os.path.join(REPO_ROOT, '.buildtools', 'release-manifest.json')
+    if not os.path.exists(path):
+        return []
+    data = json.load(io.open(path, encoding='utf-8'))
+    recipes = (data.get('Scforge') or {}).get('Items') or {}
+    out = []
+    for a in data.get('Assets', []):
+        if isinstance(a, str):
+            continue
+        plugin = a.get('Plugin') or a['File'].split('/')[0]
+        out.append((plugin, recipes.get(plugin)))
+    return out, recipes
+
+
 def main():
     failures = 0
 
     # ---- 1. 逐字串引号配对 ----
-    print('[1/4] 逐字字符串引号配对')
+    print('[1/5] 逐字字符串引号配对')
     skipped = 0
     for rel in cs_files():
         for lineno, msg in check_verbatim_quotes(rel):
@@ -181,7 +202,7 @@ def main():
                                     ('，%d 个因编码跳过' % skipped) if skipped else ''))
 
     # ---- 2. 白名单是否放行了 release-manifest 里的每个插件 ----
-    print('[2/4] .gitignore 白名单是否覆盖待发布插件')
+    print('[2/5] .gitignore 白名单是否覆盖待发布插件')
     manifest_path = os.path.join(REPO_ROOT, '.buildtools', 'release-manifest.json')
     gitignore_path = os.path.join(REPO_ROOT, '.gitignore')
     if os.path.exists(manifest_path) and os.path.exists(gitignore_path):
@@ -194,7 +215,7 @@ def main():
         print('  %d 个待发布插件目录' % len({a.split('/')[0] for a in manifest_paths()}))
 
     # ---- 3. 敏感文件 ----
-    print('[3/4] 版本库内是否混入敏感文件')
+    print('[3/5] 版本库内是否混入敏感文件')
     try:
         tracked = subprocess.run(['git', 'ls-files'], cwd=REPO_ROOT,
                                  stdout=subprocess.PIPE, check=True)
@@ -211,12 +232,35 @@ def main():
     print('  %d 个被跟踪文件' % len(files))
 
     # ---- 4. 对外开源每个插件都该有 README ----
-    print('[4/4] 待发布插件是否都带 README')
+    print('[4/5] 待发布插件是否都带 README')
     if os.path.exists(manifest_path):
         for top in sorted({a.split('/')[0] for a in manifest_paths()}):
             if not os.path.exists(os.path.join(REPO_ROOT, top, 'README.md')):
                 print('  FAIL 插件 %s 缺少 README.md（对外开源至少要有功能与配置说明）' % top)
                 failures += 1
+
+    # ---- 5. Scforge 配方与 Assets 是否一一对应 ----
+    print('[5/5] Scforge 发布配方完整性')
+    plugins, recipes = manifest_plugins()
+    if not recipes:
+        print('  清单里没有 Scforge 段，跳过（只发 GitHub Release）')
+    else:
+        for plugin, recipe in plugins:
+            if recipe is None:
+                print('  FAIL 插件 %s 在 Assets 里但 Scforge.Items 里没有配方'
+                      '（会被静默跳过，平台上少一个资源）' % plugin)
+                failures += 1
+                continue
+            for key in ('Slug', 'Summary'):
+                if not recipe.get(key):
+                    print('  FAIL 插件 %s 的 Scforge 配方缺少 %s' % (plugin, key))
+                    failures += 1
+        slugs = [r.get('Slug') for _p, r in plugins if r and r.get('Slug')]
+        for s in sorted(set(slugs)):
+            if slugs.count(s) > 1:
+                print('  FAIL slug 重复：%s（slug 是资源的固定地址，不能撞）' % s)
+                failures += 1
+        print('  %d 个插件有配方，%d 个 slug 唯一' % (len(plugins), len(set(slugs))))
 
     if failures:
         print('\n共 %d 项检查失败' % failures)

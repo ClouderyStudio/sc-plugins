@@ -1,6 +1,59 @@
 {
   "Comment": "打 tag 时要作为 GitHub Release 附件上传的插件 DLL。故意不含：基础插件（整合包，不开源）、授权壳与 payload 产物、HarmonyProbe（仅测试服用）。",
   "CommentOnNames": "Name 一律用 ASCII：GitHub 的 Release 附件不支持中文名 —— 中文名会被 sanitize 成 default.dll，导致多个附件互相撞名（already_exists）。文件名不影响插件加载（核心按目录扫描 Plugins/*.dll），所以这里改成英文，映射表写进 Release 说明。",
+  "CommentOnScforge": "Scforge 段给 .buildtools/publish-to-scforge.py 用：打 tag 后把每个 DLL 上传到 SCForge 平台（api.cldery.com）。slug 一经创建不可更改（它是资源对外的固定地址），定下来别动。Category 取 SCForge 分类键，GameVersion 取 /scforge/game-versions 里的值。不填 Scforge 段则整段跳过，只发 GitHub Release。",
+  "Scforge": {
+    "Kind": "plugin",
+    "GameVersion": "x26.07.01",
+    "Category": "other",
+    "Items": {
+      "网页控制台插件": {
+        "Slug": "web-panel",
+        "Summary": "内嵌 HTTP 网页控制台：在线查看日志与玩家、执行管理命令",
+        "Tags": ["web", "admin", "console"]
+      },
+      "和平区域插件": {
+        "Slug": "peace-zone",
+        "Summary": "划分和平区域，区域内禁止玩家之间互相伤害",
+        "Tags": ["protection", "pvp"]
+      },
+      "清除低高空方块插件": {
+        "Slug": "clear-low-high",
+        "Summary": "定期清理世界底层与顶层方块，控制存档体积",
+        "Tags": ["world", "cleanup"]
+      },
+      "火柴记录插件": {
+        "Slug": "match-record",
+        "Summary": "记录火柴（打火石）的使用位置与时间，便于巡查追责",
+        "Tags": ["log", "audit"]
+      },
+      "个人进服密码插件": {
+        "Slug": "personal-code",
+        "Summary": "为每个玩家设置专属进服密码，密码不对直接拒绝进服",
+        "Tags": ["security", "login"]
+      },
+      "主城防破坏插件": {
+        "Slug": "major-city",
+        "Summary": "保护主城区域：禁止破坏方块、放置方块与容器交互",
+        "Tags": ["protection", "spawn"]
+      },
+      "清理插件": {
+        "Slug": "clear-entities",
+        "Summary": "定时清理掉落物与多余实体，缓解服务端卡顿",
+        "Tags": ["cleanup", "performance"]
+      },
+      "聊天记录插件": {
+        "Slug": "chat-record",
+        "Summary": "记录玩家聊天内容到本地文件，支持按玩家与时间检索",
+        "Tags": ["log", "chat"]
+      },
+      "无动物插件": {
+        "Slug": "no-animal",
+        "Summary": "禁止世界生成动物，降低服务端实体压力",
+        "Tags": ["creature", "performance"]
+      }
+    }
+  },
   "Assets": [
     { "File": "网页控制台插件/网页控制台插件.dll",     "Name": "web-panel.dll",           "Plugin": "网页控制台插件" },
     { "File": "和平区域插件/和平区域插件.dll",           "Name": "peace-zone.dll",          "Plugin": "和平区域插件" },

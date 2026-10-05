@@ -9,6 +9,7 @@ name: 仓库自检
 #   2. .gitignore 白名单是否覆盖了每个待发布插件（忘了放行 = 静默少发布一个）
 #   3. 版本库里有没有混入令牌 / 服务端目录 / 取证报告这类敏感文件
 #   4. 每个待发布插件是否都带 README
+#   5. Scforge 发布配方是否与 Assets 一一对应、slug 是否唯一（缺配方 = 平台静默少一个资源）
 
 on:
   push:
@@ -31,3 +32,33 @@ jobs:
 
       - name: 源码与仓库自检
         run: python3 .buildtools/check-sources.py
+
+  # 打 tag 后把 Release 附件同步到 SCForge 资源平台。
+  #
+  # ⚠️ 前置：仓库 Secrets 里要有 SCFORGE_TOKEN（scf_ 开头的 API Key，publish 作用域）。
+  # 没配的话这一步会优雅跳过并打一行提示，不会让 CI 变红 —— 这样"只发 GitHub 不发平台"
+  # 的仓库状态也能正常走 CI。
+  #
+  # 取文件走 --from-url：runner 上没有编译产物（编不出来，见文首说明），
+  # 只能从刚发布的 Release 附件下载。脚本内部会优先用 gh-proxy 加速前缀，失败自动退回直连。
+  publish-scforge:
+    needs: check
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 上传到 SCForge
+        env:
+          SCFORGE_TOKEN: ${{ secrets.SCFORGE_TOKEN }}
+        run: |
+          if [ -z "$SCFORGE_TOKEN" ]; then
+            echo "::warning::未配置 SCFORGE_TOKEN，跳过 SCForge 上传。"
+            echo "要自动发平台，请在仓库 Settings → Secrets and variables → Actions 里加上它。"
+            exit 0
+          fi
+          python3 .buildtools/publish-to-scforge.py "$GITHUB_REF_NAME" --from-url

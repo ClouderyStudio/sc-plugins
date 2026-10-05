@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-发布开源库的新版本：编译 -> 提交 -> 打 tag -> 推送 -> 建 Release -> 上传 DLL。
+发布开源库的新版本：编译 -> 提交 -> 打 tag -> 推送 -> 建 Release -> 上传 DLL -> 发到 SCForge。
 
 为什么这个脚本必须在本机跑，而不是放进 GitHub Actions：
 插件要对着 Survivalcraft 服务端核心 DLL（Survivalcraft.dll / Engine.dll / EntitySystem.dll /
@@ -9,14 +9,21 @@ Newtonsoft.Json.dll / LiteNetLib.dll）编译。那是商业游戏的文件，�
 所以：云端 CI 只做不需要核心 DLL 的校验（.buildtools/check-sources.py + ci.yml），
 真正的构建与 Release 附件上传走本脚本。
 
+最后一步（发到 SCForge）是转手给 .buildtools/publish-to-scforge.py 做的：
+它读同一份 release-manifest.json，把 DLL 传到 api.cldery.com 的资源平台。
+没配 SCFORGE_TOKEN 时会跳过并提示，不会让整个发布失败。
+
 用法（在本仓库根目录）：
     python .buildtools/publish-release.py v1.0.0
     python .buildtools/publish-release.py v1.0.0 --skip-build     # 已编译过，只发布
     python .buildtools/publish-release.py v1.0.0 --dry-run        # 只打印要做什么
+    python .buildtools/publish-release.py v1.0.0 --scforge-from-url   # SCForge 侧走 Release 加速链接
+    python .buildtools/publish-release.py v1.0.0 --no-scforge     # 只发 GitHub，不发平台
 
 前置：
     - 编译仍由 .buildtools/build-plugin.ps1 负责（本脚本只调用它，不自己调 csc）
     - GitHub token 从 ~/.git-credentials 里 host=github.com 那条读（scope 需含 repo）
+    - SCForge 上传需要环境变量 SCFORGE_TOKEN=scf_xxx（publish 作用域）；不设则自动跳过
 """
 
 import argparse
@@ -168,6 +175,9 @@ def main():
     ap.add_argument("--skip-build", action="store_true", help="跳过编译")
     ap.add_argument("--dry-run", action="store_true", help="只打印计划，不实际操作")
     ap.add_argument("--no-push", action="store_true", help="不推 git（只建 Release）")
+    ap.add_argument("--no-scforge", action="store_true", help="跳过 SCForge 上传（只发 GitHub）")
+    ap.add_argument("--scforge-from-url", action="store_true",
+                    help="SCForge 侧从 Release 加速链接取文件（默认直接用本地 DLL）")
     args = ap.parse_args()
 
     version = args.version
@@ -283,6 +293,32 @@ def main():
         log("      上传 %-20s (%d bytes)" % (name, info.get("size", 0)))
 
     log("\n完成：https://github.com/%s/releases/tag/%s" % (REPO, version))
+
+    # ---- 6. 发到 SCForge ----
+    # 转手给子脚本：它读同一份清单，把每个 DLL 发到 api.cldery.com 的资源平台。
+    # 失败不算发布失败 —— GitHub 那一半已经成了，平台侧可以单独重跑。
+    if args.no_scforge:
+        log("[6/6] 跳过 SCForge 上传（--no-scforge）")
+        return
+
+    if not os.environ.get("SCFORGE_TOKEN"):
+        log("[6/6] 跳过 SCForge：未设 SCFORGE_TOKEN。")
+        log("      要发平台的话，签发 Key（https://scforge.cldery.com/api-keys，需 publish 作用域）后：")
+        log("        set SCFORGE_TOKEN=scf_xxx            （PowerShell）")
+        log("        python .buildtools/publish-to-scforge.py %s" % version)
+        return
+
+    log("[6/6] 上传到 SCForge 资源平台...")
+    child = [sys.executable, os.path.join(REPO_ROOT, ".buildtools", "publish-to-scforge.py"),
+             version]
+    if args.scforge_from_url:
+        child.append("--from-url")
+    p = subprocess.run(child, cwd=REPO_ROOT)
+    if p.returncode != 0:
+        log("      ✗ SCForge 上传未成功（退出码 %d）。GitHub Release 已发布，"
+            "平台侧可单独重跑上面的命令。" % p.returncode)
+    else:
+        log("      ✓ SCForge 上传完成（资源与版本进审核，通过后对外可见）")
 
 
 if __name__ == "__main__":

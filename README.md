@@ -59,7 +59,7 @@ dotnet exec "<path>\csc.dll" ^
 python .buildtools/publish-release.py v1.0.0
 ```
 
-它会依次：编译 → 提交源码 → 打 tag → 推送 → 创建 GitHub Release → 把 9 个 DLL 传成附件。
+它会依次：编译 → 提交源码 → 打 tag → 推送 → 创建 GitHub Release → 把 9 个 DLL 传成附件 → 发到 SCForge 平台。
 
 常用开关：
 
@@ -68,14 +68,48 @@ python .buildtools/publish-release.py v1.0.0
 | `--skip-build` | 已经编译过了，只做发布 |
 | `--dry-run` | 只打印要做什么，不动仓库也不上传 |
 | `--no-push` | 不推 git，只建 Release 并传附件 |
+| `--no-scforge` | 只发 GitHub，不上传 SCForge 平台 |
+| `--scforge-from-url` | SCForge 侧从 Release 加速链接取文件（默认直接用本地 DLL） |
 
 要发布哪些 DLL 由 `.buildtools/release-manifest.json` 决定（刻意不含整合包与授权壳产物）。
 
 > ⚠️ **为什么不在 GitHub Actions 里编译**：插件需要对着 Survivalcraft 服务端核心 DLL
 > （`Survivalcraft.dll` 等）编译，那是商业游戏的文件，既不能传进公开仓库也没有 NuGet 包可装，
 > 云端 runner 拿到源码也编不出 DLL。所以云端 CI（`.github/workflows/ci.yml`）只跑**不需要核心 DLL** 的检查：
-> 逐字串引号配对、白名单是否覆盖每个待发布插件、有没有混入敏感文件、每个插件是否带 README
-> （见 `.buildtools/check-sources.py`）。构建与附件上传一律走本机的 `publish-release.py`。
+> 逐字串引号配对、白名单是否覆盖每个待发布插件、有没有混入敏感文件、每个插件是否带 README、
+> Scforge 配方是否完整（见 `.buildtools/check-sources.py`）。
+
+### 发布到 SCForge 平台
+
+`publish-release.py` 的最后一步会把 DLL 上传到 [SCForge](https://scforge.cldery.com)
+（生存战争插件 / 模组资源平台）。这一步也可以单独跑：
+
+```bat
+set SCFORGE_TOKEN=scf_xxxx
+python .buildtools/publish-to-scforge.py v1.0.0
+```
+
+需要一把 `publish` 作用域的 API Key（<https://scforge.cldery.com/api-keys> 自助签发）。
+没设 `SCFORGE_TOKEN` 时这一步会**跳过并提示**，不会让整个发布失败。
+
+每个插件在平台上的标题、slug、简介、标签写在 `release-manifest.json` 的 `Scforge.Items` 段里，
+键是插件的中文名。资源已存在时脚本自动走"追加版本"，不会重复创建。
+**slug 一经创建不可更改**（它是资源对外的固定地址）。
+
+资源与版本提交后都进审核，通过前对外不可见。
+
+### 让 CI 也自动发平台
+
+`.github/workflows/ci.yml` 里有一个 `publish-scforge` 作业：**打 tag 时**自动把 Release 附件同步到平台。
+
+它是从 Release 附件**下载**再上传的（云端没有编译产物），下载走 GitHub 加速前缀
+（默认 `https://gh-proxy.com/`，失败自动退回直连）。要启用只需两步：
+
+1. 在仓库 `Settings → Secrets and variables → Actions` 里加一个 `SCFORGE_TOKEN`（值就是 API Key）。
+2. 打 tag。没配 Secret 时该作业打一行警告后跳过，CI 不会因此变红。
+
+> 加速前缀在 `.buildtools/publish-to-scforge.py` 顶部的 `PROXY_PREFIX` 里改。
+> 加速站属于第三方服务，不建议作为唯一依赖 —— 脚本本身有直连兜底，本地发布也不走它。
 
 ## 注意事项
 
