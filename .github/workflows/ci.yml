@@ -86,6 +86,10 @@ jobs:
       - name: 上传到 SCForge
         env:
           SCFORGE_TOKEN: ${{ secrets.SCFORGE_TOKEN }}
+          # 脚本要问 GitHub「这个 Release 到底挂了哪几个附件」，
+          # 好让它只同步这几个 —— 否则 --only 发的 Release（1 个附件）
+          # 会被按清单全量处理，去下 8 个不存在的附件直接 404。
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -z "$SCFORGE_TOKEN" ]; then
             echo "::warning::未配置 SCFORGE_TOKEN，跳过 SCForge 上传。"

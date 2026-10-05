@@ -189,11 +189,15 @@ def load_manifest():
         return json.load(fh)
 
 
-def plan(manifest, version, only=None, with_basic=False):
+def plan(manifest, version, only=None, with_basic=False, present_assets=None):
     """把清单拍平成 [(plugin, name, dll_path, recipe)]。
 
     with_basic=True 时额外把不开源的基础插件也带上 —— 它不在 Assets 里（不进公开仓库），
     但有时确实想发到平台上，所以留一个显式开关，默认不带。
+
+    present_assets: 只保留附件名出现在这个集合里的插件。
+    ⚠️ CI 走 --from-url 时必须传它 —— Release 可能是 --only 发的（只有 1 个附件），
+    而清单是全量 9 个；不筛的话会去下根本不存在的附件，直接 404 崩掉作业。
     """
     sc = manifest.get("Scforge") or {}
     items = sc.get("Items") or {}
@@ -209,6 +213,8 @@ def plan(manifest, version, only=None, with_basic=False):
     out = []
     for asset in manifest.get("Assets", []):
         plugin = asset["Plugin"]
+        if present_assets is not None and asset["Name"] not in present_assets:
+            continue
         if plugin not in items:
             if not only or plugin == only or asset["Name"] == only:
                 log("  跳过 %s（清单里没有 Scforge 配方）" % plugin)
@@ -225,6 +231,31 @@ def plan(manifest, version, only=None, with_basic=False):
             "Tags": ["core"],
         }))
     return out, sc
+
+
+def release_asset_names(version):
+    """问 GitHub：这个 Release 到底挂了哪几个附件。
+
+    需要 GH_TOKEN / GITHUB_TOKEN（CI 里用内置的 GITHUB_TOKEN 即可）。
+    拿不到就返回 None —— 调用方会退回"按清单全量"的老行为，不至于因为查不到就罢工。
+    """
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    if not token or not repo:
+        return None
+    url = "https://api.github.com/repos/%s/releases/tags/%s" % (repo, version)
+    req = urllib.request.Request(url, headers={
+        "Authorization": "Bearer " + token,
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "publish-to-scforge",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.load(resp)
+    except Exception as exc:
+        log("  ⚠ 查 Release 附件失败（%s），将按清单全量处理" % exc)
+        return None
+    return {a["name"] for a in (data.get("assets") or [])}
 
 
 def release_url(version, name):
@@ -249,7 +280,13 @@ def main():
     version = args.version if args.version.startswith("v") else "v" + args.version
 
     manifest = load_manifest()
-    entries, sc = plan(manifest, version, only=args.only, with_basic=args.with_basic)
+    # --from-url（CI 走的路径）：先问 Release 挂了哪几个附件，只同步这几个。
+    # 否则 --only 发的 Release（1 个附件）会被按清单全量处理，去下 8 个不存在的附件。
+    present = release_asset_names(version) if args.from_url else None
+    if present is not None:
+        log("[0/2] Release %s 有 %d 个附件：%s" % (version, len(present), ", ".join(sorted(present))))
+    entries, sc = plan(manifest, version, only=args.only,
+                       with_basic=args.with_basic, present_assets=present)
     if not entries:
         die("没有要处理的插件。检查 release-manifest.json 与 --only。")
 
@@ -290,6 +327,7 @@ def main():
     if args.from_url:
         os.makedirs(tmpdir, exist_ok=True)
 
+    skipped = 0
     for plugin, name, path, recipe in entries:
         slug = recipe.get("Slug")
         if not slug:
@@ -334,9 +372,19 @@ def main():
             ]
             if recipe.get("GameVersion") or sc.get("GameVersion"):
                 fields.append(("GameVersion", recipe.get("GameVersion") or sc["GameVersion"]))
-            scforge("POST", "/scforge/addons/%s/versions" % addon_id, token,
-                    fields=fields, files=[("Package", name, blob)])
-            log("  ✓ %-16s 追加版本 %s（资源已存在）" % (slug, version))
+            # ⚠️ 版本号唯一：这个版本已经传过了（比如本机 --only 传过、CI 又跑一遍，
+            # 或者重跑同一个 tag 的 CI）时，API 会回 409。这不是错误，是"已是最新"，
+            # 当成硬失败会让整个作业变红、还会连累后面还没传的插件，所以这里软跳过。
+            try:
+                scforge("POST", "/scforge/addons/%s/versions" % addon_id, token,
+                        fields=fields, files=[("Package", name, blob)], raise_http=True)
+                log("  ✓ %-16s 追加版本 %s（资源已存在）" % (slug, version))
+            except SCForgeHttpError as exc:
+                if exc.code == 409:
+                    log("  = %-16s 版本 %s 已存在，跳过（%s）" % (slug, version, exc.detail.strip()[:60]))
+                    skipped += 1
+                else:
+                    die("插件 %s 追加版本失败：%d %s" % (slug, exc.code, exc.detail))
         else:
             summary = recipe.get("Summary") or plugin
             # Description 是服务端必填项（缺了会 400 "请填写详细描述"）；
@@ -377,6 +425,8 @@ def main():
     with open(os.path.join(REPO_ROOT, SNAPSHOT_FILE), "w", encoding="utf-8") as fh:
         json.dump(snap, fh, ensure_ascii=False, indent=2)
     log("[2/2] 完成。快照写入 %s" % SNAPSHOT_FILE)
+    if skipped:
+        log("      其中 %d 个版本此前已传过，本次跳过（不是失败）。" % skipped)
     log("      资源与版本发布后都进审核，通过前对外不可见 —— 去后台点通过即可。")
 
 
