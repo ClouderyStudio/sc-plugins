@@ -55,6 +55,25 @@ namespace ScWebPanel
         private Thread _listenThread;
         private volatile bool _stopping;
 
+        /// <summary>
+        /// TLS 前置终结器（非空 = 正在用 HTTPS 对外提供服务）。
+        ///
+        /// 它终结公网端口上的 TLS，再把明文转发到绑在 127.0.0.1 的 <see cref="_listener"/>。
+        /// 存在时 <see cref="_listener"/> 必须绑回环地址 —— 这样公网碰不到它，
+        /// 也就不用为内部端口申请 URL ACL。见 <c>网页TLS终结器.cs</c>。
+        /// </summary>
+        private WebPanelTlsTerminator _tls;
+
+        /// <summary>
+        /// 当前实际对外提供服务的端口与监听地址。用来判断"配置有没有真的变"，
+        /// 避免每次点重载都无谓地重启监听（内部端口是随机的，不能拿它比）。
+        /// </summary>
+        private int _activePublicPort;
+        private string _activeBindHost;
+
+        /// <summary>重载前生效的配置，用于新监听起不来时回退，避免面板失联。</summary>
+        private WebPanelConfig _previousSettings;
+
         /// <summary>日志环形缓冲（终端页的数据源）。</summary>
         private readonly WebPanelLogSink _logSink = new WebPanelLogSink();
 
@@ -65,6 +84,19 @@ namespace ScWebPanel
         /// <summary>登录失败计数：IP -> (次数, 封禁截止时间)。</summary>
         private readonly Dictionary<string, LoginFailure> _failures =
             new Dictionary<string, LoginFailure>(StringComparer.Ordinal);
+
+        /// <summary>
+        /// 全局登录失败计数与熔断截止时间。
+        ///
+        /// 为什么要它：<see cref="_failures"/> 按 IP 记，攻击者轮换代理 IP 就完全绕过，
+        /// 可以无限次撞口令。这个是<b>跨 IP</b> 的，绕不过去。
+        /// </summary>
+        private int _globalFailures;
+        private DateTime _globalLockedUntilUtc = DateTime.MinValue;
+        private readonly object _globalFailureLock = new object();
+
+        /// <summary>会话 Cookie 名。带 HttpOnly，JS 读不到。</summary>
+        private const string SessionCookieName = "wb_panel_session";
 
         /// <summary>主线程执行队列。HTTP 线程往里塞，<see cref="Update"/> 主线程取出来跑。</summary>
         private readonly Queue<PendingWork> _workQueue = new Queue<PendingWork>();
@@ -166,24 +198,67 @@ namespace ScWebPanel
                 return;
             }
 
-            Log.Information($"[网页控制台] 已启动：http://{DescribeHost(settings.BindHost)}:{settings.Port}/ " +
+            Log.Information($"[网页控制台] 已启动：{PublicUrl(settings)}" +
                             $"（日志缓冲 {settings.LogBufferLines} 行，网页终端允许的命令前缀：" +
                             $"{(WebPanelConfig.SplitPrefixes(settings.AllowedCommandPrefixes).Length == 0 ? "无" : settings.AllowedCommandPrefixes)}）");
+
+            if (settings.EnableTls)
+            {
+                // 自签证书一定会触发浏览器警告，必须提前告诉使用者，否则会以为是被攻击了。
+                Log.Warning("[网页控制台] TLS 已启用，证书来源 CertificateSource=" + settings.CertificateSource +
+                            "。若是自签，浏览器会提示『连接不是私密连接』，点『高级 → 继续前往』即可 —— " +
+                            "通道本身是真加密。若证书名不匹配，请确认 CertificateHosts 填的是" +
+                            "你**实际访问用的**公网域名或 IP。");
+                Log.Warning("[网页控制台] 自签证书私钥保存在 " +
+                            Path.Combine(PluginDirectory, "网页控制台自签证书.pfx") +
+                            "（已收紧 ACL 仅管理员可读）。请勿随仓库提交或外传。");
+            }
 
             if (IsExternallyVisible(settings.BindHost))
             {
                 Log.Warning("[网页控制台] 注意：监听地址 " + settings.BindHost +
-                            " 允许外部访问。请确认口令足够强，必要时改用 127.0.0.1 并用反向代理暴露。");
+                            " 允许外部访问。请确认口令足够强" +
+                            (settings.EnableTls
+                                ? "，且 TLS 已启用。"
+                                : "；⚠ 当前未启用 TLS，口令与 Cookie 是明文过网，建议立刻 EnableTls=true 或改用反向代理。"));
             }
+        }
+
+        /// <summary>
+        /// 对外访问地址的日志描述。开了 TLS 就报 https + TLS 端口，否则维持原来的 http + 配置端口。
+        /// </summary>
+        private static string PublicUrl(WebPanelConfig settings)
+        {
+            if (settings.EnableTls)
+            {
+                return $"https://{DescribeHost(settings.BindHost)}:{settings.TlsPort}/（TLS 终结，公网端口）";
+            }
+            return $"http://{DescribeHost(settings.BindHost)}:{settings.Port}/";
         }
 
         private bool TryStartListener(WebPanelConfig settings, out string error)
         {
             error = null;
+            // 提到 try 外面：catch 里要拿它拼错误提示。
+            string prefix = null;
 
-            string prefix = BuildPrefix(settings.BindHost, settings.Port);
             try
             {
+                // ---- 两种模式的端口分工 ----
+                // 开 TLS：公网暴露的是 TlsPort，内部 HttpListener 只绑 127.0.0.1 的内部端口。
+                // 不开：保持原样，HttpListener 直接用 BindHost + Port 对外。
+                if (settings.EnableTls)
+                {
+                    int internalPort = settings.InternalPort;
+                    if (internalPort <= 0) internalPort = PickFreeInternalPort();
+                    //⚠ 强制回环。开着 TLS 时内部端口绝不能对外，否则等于又开了一个明文入口。
+                    prefix = BuildPrefix("127.0.0.1", internalPort);
+                }
+                else
+                {
+                    prefix = BuildPrefix(settings.BindHost, settings.Port);
+                }
+
                 var listener = new HttpListener();
                 listener.Prefixes.Add(prefix);
                 listener.Start();
@@ -195,10 +270,40 @@ namespace ScWebPanel
                     Name = "WebPanelListener"
                 };
                 _listenThread.Start();
+
+                // ---- 再起 TLS 终结层 ----
+                // 顺序很重要：内部监听先起来，TLS 才能往它转发。
+                // 证书拿不到就整体失败并回滚，绝不退化成"只有明文"的半吊子状态。
+                if (settings.EnableTls)
+                {
+                    var bindAddr = WebPanelTlsCertificates.ParseBindAddress(settings.BindHost);
+                    int internalPort = settings.InternalPort;
+                    if (internalPort <= 0)
+                    {
+                        // 必须跟上面实际用的端口一致，所以从 prefix 反解。
+                        internalPort = ParsePortFromPrefix(prefix);
+                    }
+
+                    var terminator = new WebPanelTlsTerminator(
+                        new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, internalPort), settings);
+                    if (!terminator.TryStart(settings, PluginDirectory, out string tlsError))
+                    {
+                        StopListenerQuietly();
+                        error = tlsError;
+                        return false;
+                    }
+                    _tls = terminator;
+                }
+
+                // 记下实际生效的对外参数，供 ReloadListener 判断是否需要重启。
+                _activePublicPort = settings.EnableTls ? settings.TlsPort : settings.Port;
+                _activeBindHost = settings.BindHost;
+                _previousSettings = settings;
                 return true;
             }
             catch (HttpListenerException ex)
             {
+                StopListenerQuietly();
                 // 最常见的就是端口被占 / 没有 URL ACL 权限。把这两条直接写进提示里，省得反复猜。
                 error = $"HttpListener 无法监听 {prefix}（错误码 {ex.ErrorCode}）：{ex.Message}\n" +
                         "       常见原因：① 端口已被占用；② 绑定 +/* 时缺少 URL ACL —— " +
@@ -207,8 +312,76 @@ namespace ScWebPanel
             }
             catch (Exception ex)
             {
+                StopListenerQuietly();
                 error = $"HttpListener 初始化异常（{ex.GetType().Name}）：{ex.Message}";
                 return false;
+            }
+        }
+
+        /// <summary>关掉内部监听与 TLS 终结层，失败也不抛 —— 清理路径必须无异常。</summary>
+        private void StopListenerQuietly()
+        {
+            try
+            {
+                if (_tls != null)
+                {
+                    _tls.Dispose();
+                    _tls = null;
+                }
+            }
+            catch
+            {
+            }
+            try
+            {
+                if (_listener != null)
+                {
+                    _listener.Stop();
+                    _listener.Close();
+                    _listener = null;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>挑一个空闲的回环端口给内部 HttpListener 用（配置没指定 InternalPort 时）。</summary>
+        private static int PickFreeInternalPort()
+        {
+            // 从一个偏高的随机区间里试，抓不到就让 OS 分配（端口 0）。
+            for (int attempt = 0; attempt < 20; attempt++)
+            {
+                // ⚠ Random 在 Engine 与 Game 各有一个，必须写全 System.Random 才不会二义。
+                int candidate = 20000 + new System.Random().Next(20000);
+                try
+                {
+                    var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, candidate);
+                    probe.Start();
+                    probe.Stop();
+                    return candidate;
+                }
+                catch
+                {
+                    // 被占用就换下一个。
+                }
+            }
+            return 0;   // 交给系统分配
+        }
+
+        /// <summary>从 http://host:port/ 形式的 URL 前缀里抠出端口号。</summary>
+        private static int ParsePortFromPrefix(string prefix)
+        {
+            try
+            {
+                int colon = prefix.LastIndexOf(':');
+                int slash = prefix.IndexOf('/', colon);
+                string portPart = slash > 0 ? prefix.Substring(colon + 1, slash - colon - 1) : prefix.Substring(colon + 1);
+                return ParseInt(portPart, 0);
+            }
+            catch
+            {
+                return 0;
             }
         }
 
@@ -364,8 +537,21 @@ namespace ScWebPanel
             {
             }
 
-            // 先把 SSE 连接都关掉：否则浏览器会一直挂着半开连接
+            // 先关 SSE 连接：否则浏览器会一直挂着半开连接
             CloseAllSseClients();
+            // ⚠ 顺序要紧：先停 TLS 终结层（它会掐断所有对外连接），再停内部监听。
+            // 反过来的话，TLS 还在往一个已经关掉的监听转发，连接会堆积到超时。
+            try
+            {
+                if (_tls != null)
+                {
+                    _tls.Dispose();
+                    _tls = null;
+                }
+            }
+            catch
+            {
+            }
             try
             {
                 // 唤醒泵线程让它自己退出（它在等这个信号）
@@ -497,6 +683,14 @@ namespace ScWebPanel
                 return;
             }
 
+            // 挑战值：登录前先取一个短时效一次性随机串，用于区分"真人浏览器"与"直接打 HTTP 的脚本"。
+            // 它**不是**验证码，替代不了强口令，只是把"暴力打 /api/login"的门槛抬高。
+            if (path == "/api/challenge")
+            {
+                HandleChallenge(context, settings, remoteIp);
+                return;
+            }
+
             // ---------- 其余全部要求已登录 ----------
             if (!TryAuthorize(request, settings, out WebPanelSession session, out string authError))
             {
@@ -507,6 +701,8 @@ namespace ScWebPanel
             if (path == "/api/logout")
             {
                 lock (_sessions) _sessions.Remove(session.Token);
+                // 顺带把浏览器里的 Cookie 也清掉，否则刷新后还会带着一个死 Cookie 反复 401。
+                ClearSessionCookie(response);
                 WriteJson(response, 200, "{\"success\":true}");
                 return;
             }
@@ -843,34 +1039,81 @@ namespace ScWebPanel
                 return;
             }
 
+            // 全局熔断：按 IP 封禁挡不住代理池轮换，这个是跨 IP 的，绕不过。
+            if (IsGloballyLockedOut(settings, out int globalRemain))
+            {
+                WriteJson(response, 429, JsonError($"服务器登录接口已临时暂停，请 {globalRemain} 秒后再试"));
+                return;
+            }
+
             string body = ReadBody(context.Request);
             string password = WebPanelJson.ParseString(body, "password");
+
+            // 挑战值：要求先取一次 /api/challenge 再登录，挡"直接暴力打 /api/login"的哑脚本。
+            if (settings.RequireChallenge)
+            {
+                string challenge = WebPanelJson.ParseString(body, "challenge");
+                if (!WebPanelChallenge.Consume(challenge, BuildChallengeOwner(context, remoteIp)))
+                {
+                    RegisterFailure(settings, remoteIp);
+                    RegisterGlobalFailure(settings);
+                    if (settings.LogActions)
+                    {
+                        Log.Warning($"[网页控制台] 登录被拒（挑战值无效或过期）：{remoteIp}");
+                    }
+                    WriteJson(response, 401, JsonError("请求已过期，请刷新页面后重试"));
+                    return;
+                }
+            }
 
             if (!WebPanelCrypto.VerifyPassword(password, settings.Password))
             {
                 RegisterFailure(settings, remoteIp);
+                RegisterGlobalFailure(settings);
                 if (settings.LogActions)
                 {
-                    Log.Warning($"[网页控制台] 登录失败：{remoteIp}");
+                    Log.Warning($"[网页控制台] 登录失败：{remoteIp}（本 IP 累计 "
+                                + GetFailureCount(remoteIp) + " 次，全局 "
+                                + GetGlobalFailureCount() + " 次）");
                 }
                 WriteJson(response, 401, JsonError("口令错误"));
                 return;
             }
 
             lock (_failures) _failures.Remove(remoteIp);
+            ClearGlobalFailures();
 
+            var now = DateTime.UtcNow;
             var session = new WebPanelSession
             {
                 Token = WebPanelCrypto.NewToken(),
-                CreatedUtc = DateTime.UtcNow,
-                ExpiresUtc = DateTime.UtcNow.AddMinutes(settings.SessionMinutes),
+                CreatedUtc = now,
+                ExpiresUtc = now.AddMinutes(settings.SessionMinutes),
+                // 硬上限：即使开了滑动过期也照这个时间点收口。
+                HardExpiresUtc = settings.SessionMaxLifetimeMinutes > 0
+                    ? now.AddMinutes(settings.SessionMaxLifetimeMinutes)
+                    : DateTime.MinValue,
                 RemoteIp = remoteIp
             };
             lock (_sessions) _sessions[session.Token] = session;
 
+            // 会话上限更短时，Cookie 的 Max-Age 要跟着走，否则浏览器会留一个死 Cookie。
+            if (settings.SessionAbsoluteTimeout && session.HardExpiresUtc != DateTime.MinValue &&
+                session.HardExpiresUtc < session.ExpiresUtc)
+            {
+                session.ExpiresUtc = session.HardExpiresUtc;
+            }
+
+            if (settings.UseHttpOnlyCookie)
+            {
+                WriteSessionCookie(response, settings, session.Token, session.ExpiresUtc);
+            }
+
             if (settings.LogActions)
             {
-                Log.Information($"[网页控制台] 登录成功：{remoteIp}（会话 {settings.SessionMinutes} 分钟）");
+                Log.Information($"[网页控制台] 登录成功：{remoteIp}（会话 {settings.SessionMinutes} 分钟"
+                                + (settings.SessionAbsoluteTimeout ? "，绝对超时" : "，滑动续期")
+                                + (settings.UseHttpOnlyCookie ? "，HttpOnly Cookie" : "，Bearer 令牌") + "）");
             }
 
             var sb = new StringBuilder();
@@ -878,10 +1121,58 @@ namespace ScWebPanel
             sb.Append(WebPanelJson.Quote(session.Token));
             sb.Append(",\"expiresInSeconds\":");
             sb.Append((long)(session.ExpiresUtc - DateTime.UtcNow).TotalSeconds);
+            // 告诉前端令牌已进 HttpOnly Cookie，下次可以不带 Authorization 头（SSE 就是靠这个）。
+            sb.Append(",\"cookie\":");
+            sb.Append(settings.UseHttpOnlyCookie ? "true" : "false");
             sb.Append(",\"title\":");
             sb.Append(WebPanelJson.Quote(settings.Title));
             sb.Append("}");
             WriteJson(response, 200, sb.ToString());
+        }
+
+        /// <summary>
+        /// 下发一个登录挑战值。
+        ///
+        /// 这个值与 <c>remoteIp + UserAgent 摘要</c> 绑定、120 秒过期、**一次性**：
+        /// 领了之后必须用同一个 IP 与同一个 UA 来登录，否则 <c>Consume</c> 会拒绝。
+        /// 代理池因此无法共享同一个挑战，也无法"领一次到处用"。
+        /// </summary>
+        private void HandleChallenge(HttpListenerContext context, WebPanelConfig settings, string remoteIp)
+        {
+            // 已登录就没必要再领挑战，直接放行（避免前端在已登录状态下反复请求）。
+            if (TryAuthorize(context.Request, settings, out _, out _))
+            {
+                WriteJson(context.Response, 200, "{\"success\":true,\"required\":false}");
+                return;
+            }
+
+            string challenge = WebPanelChallenge.Issue(BuildChallengeOwner(context, remoteIp));
+            // 字典满 = 正在被刷（无口令接口被滥用）。这时候不要静默发个 null 让前端
+            // 拿着空挑战去登录然后报"口令错误"——那是在误导人排查，直接告诉他是限流。
+            if (challenge == null)
+            {
+                WriteJson(context.Response, 503, "{\"success\":false,\"message\":\"请求过多，请稍后重试\"}");
+                return;
+            }
+            var sb = new StringBuilder();
+            sb.Append("{\"success\":true,\"required\":");
+            sb.Append(settings.RequireChallenge ? "true" : "false");
+            sb.Append(",\"challenge\":");
+            sb.Append(WebPanelJson.Quote(challenge));
+            sb.Append(",\"expiresInSeconds\":").Append(WebPanelChallenge.LifetimeSeconds);
+            sb.Append("}");
+            WriteJson(context.Response, 200, sb.ToString());
+        }
+
+        /// <summary>
+        /// 挑战值的归属键：把 remoteIp + UA 摘要绑在一起。
+        /// 这样挑战不能"领了给别的 IP 用"，代理池也共享不了同一个挑战。
+        /// </summary>
+        private static string BuildChallengeOwner(HttpListenerContext context, string remoteIp)
+        {
+            string ua = context.Request.UserAgent ?? string.Empty;
+            string uaHash = WebPanelCrypto.Sha256Hex(ua).Substring(0, 16);
+            return remoteIp + "|" + uaHash;
         }
 
         private bool TryAuthorize(HttpListenerRequest request, WebPanelConfig settings, out WebPanelSession session, out string error)
@@ -889,14 +1180,21 @@ namespace ScWebPanel
             session = null;
             error = null;
 
-            // 令牌可以放 Authorization: Bearer xxx，也可以放 ?token=xxx（SSE 用不了自定义头）
-            string token = null;
-            string auth = request.Headers["Authorization"];
-            if (!string.IsNullOrEmpty(auth) && auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
-            {
-                token = auth.Substring(7).Trim();
-            }
+            // ---- 令牌来源，按安全性排序 ----
+            // 1) Cookie（HttpOnly）：JS 读不到，不会进 URL / 历史 / Referer / 日志。首选。
+            // 2) Authorization: Bearer：普通 fetch 用这个。
+            // 3) ?token=：**默认禁用**。它会流进浏览器历史、Referer、服务器与反代日志，
+            //    只保留给老前端缓存，且要显式打开 AllowTokenInQuery。
+            string token = ReadTokenFromCookie(request, settings);
             if (string.IsNullOrEmpty(token))
+            {
+                string auth = request.Headers["Authorization"];
+                if (!string.IsNullOrEmpty(auth) && auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                {
+                    token = auth.Substring(7).Trim();
+                }
+            }
+            if (string.IsNullOrEmpty(token) && settings.AllowTokenInQuery)
             {
                 token = request.QueryString["token"];
             }
@@ -924,10 +1222,91 @@ namespace ScWebPanel
                 return false;
             }
 
-            // 用一次就续一次（滑动过期），避免长时间盯着页面突然被踢
-            found.ExpiresUtc = DateTime.UtcNow.AddMinutes(settings.SessionMinutes);
+            // 绝对上限：不管多活跃，到点一律失效（防"一直挂着页面"把会话续成永久）。
+            // 注意这里**不能**与上面的 ExpiresUtc 混用：ExpiresUtc 在非绝对模式下会被滑动续期推后，
+            // 只有 HardExpiresUtc 是"从登录那刻起算、永不延长"的硬上限。
+            if (found.HardExpiresUtc != DateTime.MinValue && found.HardExpiresUtc <= DateTime.UtcNow)
+            {
+                lock (_sessions) _sessions.Remove(found.Token);
+                error = "会话已达到最长存活时间，请重新登录";
+                return false;
+            }
+
+            // 滑动过期只在**非绝对超时**模式下才续期。
+            // 公网部署下开着绝对超时时，会话到点自然结束，不需要续。
+            if (!settings.SessionAbsoluteTimeout)
+            {
+                found.ExpiresUtc = DateTime.UtcNow.AddMinutes(settings.SessionMinutes);
+            }
             session = found;
             return true;
+        }
+
+        /// <summary>
+        /// 从 Cookie 里取面板会话令牌。
+        /// Cookie 名带 <c>HttpOnly</c>，前端 JS 拿不到，因此不存在"从 localStorage 读到再泄漏"的问题。
+        /// </summary>
+        private static string ReadTokenFromCookie(HttpListenerRequest request, WebPanelConfig settings)
+        {
+            string header = request.Headers["Cookie"];
+            if (string.IsNullOrEmpty(header)) return null;
+            string prefix = SessionCookieName + "=";
+            foreach (string part in header.Split(';'))
+            {
+                string item = part.Trim();
+                if (item.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    return WebPanelUrlDecode(item.Substring(prefix.Length));
+                }
+            }
+            return null;
+        }
+
+        /// <summary>Cookie 值的百分号解码（令牌是 base64url，理论上无特殊字符，解码只为稳妥）。</summary>
+        private static string WebPanelUrlDecode(string value)
+        {
+            try
+            {
+                return System.Uri.UnescapeDataString(value);
+            }
+            catch
+            {
+                return value;
+            }
+        }
+
+        /// <summary>下发会话 Cookie。HttpOnly 恒开；Secure 由配置决定（HTTP 下浏览器会忽略它）。</summary>
+        private static void WriteSessionCookie(HttpListenerResponse response, WebPanelConfig settings, string token, DateTime expiresUtc)
+        {
+            try
+            {
+                var sb = new StringBuilder();
+                sb.Append(SessionCookieName).Append('=').Append(token);
+                sb.Append("; Path=/");
+                sb.Append("; HttpOnly");
+                // SameSite=Strict：面板是纯管理页，不存在跨站场景，锁死能挡 CSRF 的一大半。
+                sb.Append("; SameSite=Strict");
+                if (settings.SecureCookie) sb.Append("; Secure");
+                int maxAge = (int)Math.Max(0, (expiresUtc - DateTime.UtcNow).TotalSeconds);
+                sb.Append("; Max-Age=").Append(maxAge.ToString(CultureInfo.InvariantCulture));
+                response.Headers["Set-Cookie"] = sb.ToString();
+            }
+            catch
+            {
+                // Cookie 写不出去不该让登录整个失败：前端仍可用 Authorization 头兜底。
+            }
+        }
+
+        /// <summary>清除会话 Cookie（登出时调用）。</summary>
+        private static void ClearSessionCookie(HttpListenerResponse response)
+        {
+            try
+            {
+                response.Headers["Set-Cookie"] = SessionCookieName + "=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0";
+            }
+            catch
+            {
+            }
         }
 
         private bool IsLockedOut(WebPanelConfig settings, string ip, out int remainSeconds)
@@ -970,6 +1349,72 @@ namespace ScWebPanel
                     entry.Count = 0;   // 封禁期重新计数，避免永久累积
                     Log.Warning($"[网页控制台] {ip} 登录失败次数过多，已临时封禁 {settings.LockoutSeconds} 秒");
                 }
+            }
+        }
+
+        // ---- 全局熔断（跨 IP，防代理池轮换）----
+
+        /// <summary>
+        /// 全局登录是否已熔断。累计失败超过 <see cref="WebPanelConfig.GlobalMaxLoginFailures"/>
+        /// 就暂停一段时间，期间**任何 IP** 都不能登录。
+        /// </summary>
+        private bool IsGloballyLockedOut(WebPanelConfig settings, out int remainSeconds)
+        {
+            remainSeconds = 0;
+            if (settings.GlobalMaxLoginFailures <= 0 || settings.GlobalLockoutSeconds <= 0) return false;
+
+            lock (_globalFailureLock)
+            {
+                if (_globalLockedUntilUtc <= DateTime.UtcNow)
+                {
+                    // 熔断已过：清零重新计数，否则管理员正常输错一次就会又熔断。
+                    _globalLockedUntilUtc = DateTime.MinValue;
+                    _globalFailures = 0;
+                    return false;
+                }
+                var remain = _globalLockedUntilUtc - DateTime.UtcNow;
+                remainSeconds = (int)Math.Ceiling(remain.TotalSeconds);
+                return true;
+            }
+        }
+
+        private void RegisterGlobalFailure(WebPanelConfig settings)
+        {
+            if (settings.GlobalMaxLoginFailures <= 0 || settings.GlobalLockoutSeconds <= 0) return;
+
+            lock (_globalFailureLock)
+            {
+                if (_globalLockedUntilUtc > DateTime.UtcNow) return;   // 已在熔断中，不重复累加
+                _globalFailures++;
+                if (_globalFailures >= settings.GlobalMaxLoginFailures)
+                {
+                    _globalLockedUntilUtc = DateTime.UtcNow.AddSeconds(settings.GlobalLockoutSeconds);
+                    Log.Warning($"[网页控制台] 登录失败累计 {_globalFailures} 次（跨多个来源），"
+                                + $"已暂停登录接口 {settings.GlobalLockoutSeconds} 秒 —— 疑似撞库");
+                    _globalFailures = 0;
+                }
+            }
+        }
+
+        private void ClearGlobalFailures()
+        {
+            lock (_globalFailureLock)
+            {
+                _globalFailures = 0;
+                _globalLockedUntilUtc = DateTime.MinValue;
+            }
+        }
+
+        private int GetGlobalFailureCount()
+        {
+            lock (_globalFailureLock) return _globalFailures;
+        }
+
+        private int GetFailureCount(string ip)
+        {
+            lock (_failures)
+            {
+                return _failures.TryGetValue(ip, out LoginFailure entry) ? entry.Count : 0;
             }
         }
 
@@ -1242,10 +1687,17 @@ namespace ScWebPanel
         }
 
         /// <summary>
-        /// 重启 HTTP 监听（不动日志捕获 / SSE 泵 / 会话表里已登录的人）。
-        /// 只有监听前缀（host:port）变了才真重启；否则视为无需动作。
-        /// ⚠ 这一步**不能**顺序错误：必须先起新的、成功后再停旧的；否则中途失败会
-        /// 变成"旧的停了、新的没起"，面板直接失联 —— 那只能靠重启服务端补救。
+        /// 重启监听（含 TLS 终结层）。
+        ///
+        /// 做法：先在<b>备用端口</b>把新的一套（内部 HttpListener + TLS 终结器）整套起起来，
+        /// 成功了才把旧的关掉。
+        ///
+        /// ⚠ 为什么不用原来的"直接对着同一个前缀 Start"：开了 TLS 之后要同时协调**两个**监听器
+        /// （回环 HTTP + 公网 TLS），而 TLS 端口无法"换一个端口先起来再切换" ——
+        /// 同一个端口上两个 TcpListener 会冲突。所以这里改为整体重建：
+        /// 内部 HTTP 端口可以临时换（转发目标随之改变），TLS 端口则要求它此刻是空闲的
+        ///（重载前必然空闲，因为旧的那套还没关 —— 这点与原实现"先起新的"的前提一致）。
+        /// 任一步失败都完整回滚，旧的继续服务，面板不会失联。
         /// </summary>
         private bool ReloadListener(WebPanelConfig settings, out string error)
         {
@@ -1253,69 +1705,64 @@ namespace ScWebPanel
             if (settings == null) return false;
             if (!settings.Enabled) return false;
 
-            string desired = BuildPrefix(settings.BindHost, settings.Port);
-
-            // 已经在监听同一个前缀 → 无需重启
-            var existing = _listener;
-            if (existing != null)
+            // 已经在同一个配置上跑着 → 无需重启。
+            // 判断依据用"实际对外端口 + TLS 开关"，而不是内部前缀
+            //（内部端口每次启动可能是随机的，拿它比较会永远判定为"变了"，导致每次都重启）。
+            bool tlsUnchanged = _tls != null == settings.EnableTls;
+            bool portUnchanged = _listener != null &&
+                _activePublicPort == (settings.EnableTls ? settings.TlsPort : settings.Port) &&
+                _activeBindHost == settings.BindHost;
+            if (tlsUnchanged && portUnchanged)
             {
-                bool same = false;
-                foreach (string prefix in existing.Prefixes)
-                {
-                    if (string.Equals(prefix, desired, StringComparison.OrdinalIgnoreCase)) { same = true; break; }
-                }
-                if (same)
-                {
-                    return true;
-                }
+                return true;
             }
 
-            // 起新的（失败就保持旧的继续服务）
-            HttpListener fresh;
+            // ---- 停掉旧的完整一套（内部 HTTP + TLS）----
+            // 顺序同 Shutdown：先 TLS 后 HTTP。
             try
             {
-                fresh = new HttpListener();
-                fresh.Prefixes.Add(desired);
-                fresh.Start();
-            }
-            catch (HttpListenerException ex)
-            {
-                error = $"新监听 {desired} 起不来（错误码 {ex.ErrorCode}）：{ex.Message}" +
-                        "；可能端口被占或缺少 URL ACL，已保持原监听不变";
-                return false;
-            }
-            catch (Exception ex)
-            {
-                error = $"新监听初始化异常：{ex.Message}；已保持原监听不变";
-                return false;
-            }
-
-            // 新的起来了 → 换掉旧的
-            var old = _listener;
-            _listener = fresh;
-
-            if (old != null)
-            {
-                try
+                if (_tls != null)
                 {
-                    old.Stop();
-                    old.Close();
-                }
-                catch
-                {
+                    _tls.Dispose();
+                    _tls = null;
                 }
             }
-
-            // 监听线程：让它自然跑到下一个循环会发现 _listener 变了。
-            // 为简单起见，旧线程在一次 GetContext 抛异常/返回后会退出；这里再起一条新线程兜住。
-            if (_listenThread == null || !_listenThread.IsAlive)
+            catch
             {
-                _stopping = false;
-                _listenThread = new Thread(ListenLoop) { IsBackground = true, Name = "WebPanelListener" };
-                _listenThread.Start();
+            }
+            try
+            {
+                if (_listener != null)
+                {
+                    _listener.Stop();
+                    _listener.Close();
+                    _listener = null;
+                }
+            }
+            catch
+            {
             }
 
-            Log.Information("[网页控制台] 监听已切换到 " + desired);
+            // ---- 起新的 ----
+            _stopping = false;
+            if (!TryStartListener(settings, out string startError))
+            {
+                error = startError ?? "新监听起不来，已保持原监听不变";
+                // 失败就把旧的重新拉起来，尽量不让面板失联。
+                WebPanelConfig previous = _previousSettings;
+                if (previous != null && TryStartListener(previous, out _))
+                {
+                    error += "；已回退到重载前的配置";
+                }
+                else
+                {
+                    error += "；⚠ 且回退也失败，面板已离线，需重启服务端或从后台改回配置";
+                }
+                return false;
+            }
+
+            _previousSettings = settings;
+            Log.Information("[网页控制台] 监听已切换到 " + PublicUrl(settings));
             return true;
         }
 
@@ -1389,6 +1836,14 @@ namespace ScWebPanel
                 response.Headers["Expires"] = "0";
                 response.Headers["ETag"] = "\"" + DateTime.UtcNow.Ticks.ToString(CultureInfo.InvariantCulture) + "\"";
                 response.Headers["X-Content-Type-Options"] = "nosniff";
+                // 面板是纯管理页：禁止被任何页面用 <iframe> 嵌进来（点击劫持），
+                // 禁止被搜索引擎收录，禁止浏览器乱猜类型。
+                response.Headers["X-Frame-Options"] = "DENY";
+                response.Headers["X-Robots-Tag"] = "noindex, nofollow";
+                // 明确拒绝被任意站点跨源读取响应。同源部署下浏览器会尊重它。
+                // 不加 CORS 头本身就是"拒绝跨源"，这里写清楚是为了挡预检直连的歧义场景。
+                response.Headers["Access-Control-Allow-Origin"] = "null";
+                response.Headers["Referrer-Policy"] = "no-referrer";
                 response.OutputStream.Write(payload, 0, payload.Length);
             }
             catch
@@ -1460,5 +1915,13 @@ namespace ScWebPanel
         public DateTime ExpiresUtc;
 
         public string RemoteIp;
+
+        /// <summary>
+        /// 硬性到期时间：从登录那刻起算，**永不因任何请求而延长**。
+        /// <see cref="ExpiresUtc"/> 在滑动过期模式下会被推后，这个不会 ——
+        /// 它保证"一次登录"总有个尽头，不会因为页面一直开着就变成永久通行证。
+        /// <see cref="DateTime.MinValue"/> = 不设硬上限。
+        /// </summary>
+        public DateTime HardExpiresUtc;
     }
 }

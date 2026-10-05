@@ -484,6 +484,12 @@ tbody tr:hover{background:var(--card-2)}
             sb.Append(@"
 'use strict';
 var TOKEN = localStorage.getItem('wb_token') || '';
+/* true = 令牌在 HttpOnly Cookie 里（JS 读不到，靠 Cookie 随请求自动带）。
+   这种情况下去掉 Authorization 头，并把 credentials 设成 same-origin。
+   SSE（EventSource）就是靠 Cookie 鉴权的 —— 它不能自定义 header，
+   以前只能把令牌塞进 ?token=，那会让令牌进浏览器历史/Referer/服务器日志。
+   有了 HttpOnly Cookie，SSE URL 里再也不需要带令牌。 */
+var USE_COOKIE = !TOKEN;
 var VIEW = 'overview';
 var LOG_CURSOR = 0;
 var LOG_LINES = [];
@@ -516,7 +522,10 @@ function fmtDur(sec){
 function api(path, opts){
   opts = opts || {};
   opts.headers = opts.headers || {};
-  if(TOKEN) opts.headers['Authorization'] = 'Bearer ' + TOKEN;
+  // Cookie 模式下不挂 Authorization：令牌在 HttpOnly Cookie 里，浏览器会自动带上。
+  if(TOKEN && !USE_COOKIE) opts.headers['Authorization'] = 'Bearer ' + TOKEN;
+  // same-origin：让浏览器在同源请求里带上会话 Cookie。
+  opts.credentials = opts.credentials || 'same-origin';
   if(opts.body && !opts.headers['Content-Type'])
     opts.headers['Content-Type'] = 'application/json';
   return fetch(path, opts).then(function(r){
@@ -526,7 +535,7 @@ function api(path, opts){
 }
 
 function logoutLocal(){
-  TOKEN = ''; localStorage.removeItem('wb_token');
+  TOKEN = ''; USE_COOKIE = true; localStorage.removeItem('wb_token');
   if(timer) clearInterval(timer);
   stopLogStream();
   $('app').style.display = 'none';
@@ -538,18 +547,49 @@ function doLogin(){
   var pw = $('pw').value;
   if(!pw){ $('loginErr').textContent = '请输入口令'; return; }
   $('loginErr').textContent = '';
-  fetch('/api/login', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ password: pw })
-  }).then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+  var err = $('loginErr');
+
+  // 先取挑战值再登录。服务端 RequireChallenge 打开时必须带上，
+  // 否则会返回《请求已过期，请刷新页面后重试》。
+  fetch('/api/challenge', { method:'GET', credentials:'same-origin' })
+    .then(function(r){
+      // 挑战值接口自己失败（限流/网络）时必须在这里停住。
+      // 否则会把失败响应当成《不需要挑战》继续去登录，最后报成口令错误 —— 误导排查。
+      return r.json().then(function(d){
+        if(!r.ok) throw new Error(d.message || '取挑战值失败，请稍后重试');
+        return d;
+      });
+    })
+    .then(function(ch){
+      var body = { password: pw };
+      if(ch && ch.required){
+        if(!ch.challenge) throw new Error('取挑战值失败，请刷新页面后重试');
+        body.challenge = ch.challenge;
+      }
+      return fetch('/api/login', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        // 同源 + Cookie 鉴权必须显式带上凭据，否则浏览器不会发送会话 Cookie。
+        credentials:'same-origin',
+        body: JSON.stringify(body)
+      });
+    })
+    .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
     .then(function(res){
-      if(!res.ok){ $('loginErr').textContent = res.d.message || '登录失败'; return; }
-      TOKEN = res.d.token;
-      localStorage.setItem('wb_token', TOKEN);
+      if(!res.ok){ err.textContent = res.d.message || '登录失败'; return; }
+      // 令牌已在 HttpOnly Cookie 里（服务端 cookie=true 时），JS 读不到也不需要读。
+      // 这里只在服务端没启用 Cookie 时才把 token 留在内存里给 Authorization 头用。
+      USE_COOKIE = !!res.d.cookie;
+      if(!USE_COOKIE){
+        TOKEN = res.d.token;
+        localStorage.setItem('wb_token', TOKEN);
+      } else {
+        TOKEN = '';
+        localStorage.removeItem('wb_token');
+      }
       $('pw').value = '';
       enterApp(res.d.title);
     })
-    .catch(function(e){ $('loginErr').textContent = e.message || '网络错误'; });
+    .catch(function(e){ err.textContent = e.message || '网络错误'; });
 }
 
 function enterApp(title){
@@ -950,6 +990,10 @@ var SSE_FAILS = 0;
 function startLogStream(){
   if(!window.WB_SSE || typeof EventSource === 'undefined'){ return; }
   if(SSE_FAILS >= 3){ return; }            // 连不上就别再折腾了，交给轮询
+  // URL 里绝不带令牌：EventSource 不能自定义 header，以前只能拼 ?token=，
+  // 那样令牌会进浏览器历史 / Referer / 服务器与反代日志。
+  // 现在靠 HttpOnly 会话 Cookie —— 浏览器对同源 EventSource 会自动带上 Cookie。
+  // withCredentials 只在跨域时才需要，这里同源，保持默认即可。
   try{ SSE = new EventSource('/api/logs/stream?since=' + LOG_CURSOR); }
   catch(e){ SSE_FAILS++; return; }
 
@@ -1302,7 +1346,9 @@ for(var i=0;i<navBtns.length;i++){
 }
 
 /* ---------------- 启动 ---------------- */
-if(TOKEN){
+// Cookie 模式下 TOKEN 为空，但 Cookie 可能还在（服务端还认）——
+// 所以照样去问一次 overview，让服务端说了算。
+if(TOKEN || USE_COOKIE){
   api('/api/overview').then(function(d){
     if(d && d.success) enterApp(d.title);
     else logoutLocal();
