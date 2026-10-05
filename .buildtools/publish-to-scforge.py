@@ -35,6 +35,11 @@ SCForge 的发布接口要的是**文件本体**（multipart），它自己不�
 前置：
     - SCForge API Key 从环境变量 SCFORGE_TOKEN 读（形如 scf_xxx），需要 publish 作用域。
     - 资源已存在时，本脚本走「追加版本」而不是「重复创建」——它先按 slug 查自己的资源列表。
+    - ⚠ 走「追加版本」分支时**不会更新 Summary / Description / Tags**。
+      改了清单里的文案要另外跑：
+          python .buildtools/update-scforge-copy.py
+    - ⚠ Tags 必须取自站点白名单，否则服务端 400「不支持的标签：xxx」。
+      本脚本在创建资源时会本地校验一遍（追加版本分支不传 Tags，校验不到）。
 """
 
 import argparse
@@ -53,6 +58,15 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 加速前缀：留空即直连 GitHub。取 gh-proxy.com —— 它对
 # /<owner>/<repo>/releases/download/... 有专门处理，且支持 Range 请求（大文件断点续传靠它）。
 PROXY_PREFIX = "https://gh-proxy.com/"
+
+# Tags 白名单：从站点前端 index bundle 的 Vn 数组提取（2026-10-06）。
+# ⚠ 服务端会校验，写错直接 400「不支持的标签：xxx」，且**没有** https / security / web 这类。
+ALLOWED_TAGS = {
+    "survival", "creative", "pvp", "pve", "multiplayer", "singleplayer",
+    "adventure", "technical", "decoration", "magic", "technology", "food",
+    "transport", "mining", "farming", "server", "client", "library",
+    "chinese", "open-source",
+}
 
 
 def log(msg):
@@ -391,6 +405,13 @@ def main():
             # 优先用清单里显式写的，没有就用 Summary 兜底 —— 详情页的正文另有 Readme 撑。
             description = recipe.get("Description") or summary
             readme = recipe.get("Readme") or summary
+            # ⚠ 先本地校验标签：服务端 400 的报错只说"不支持的标签：xxx"，
+            #   不告诉你合法值是什么，白名单只在前端 bundle 里躺着。
+            tags = recipe.get("Tags") or []
+            bad = [t for t in tags if t not in ALLOWED_TAGS]
+            if bad:
+                die("插件 %s 的 Tags 含非法值：%s\n合法值：%s"
+                    % (plugin, "、".join(bad), "、".join(sorted(ALLOWED_TAGS))))
             fields = [
                 ("Kind", kind),
                 ("Name", plugin),
@@ -401,7 +422,7 @@ def main():
                 # ⚠️ 兜底值必须是 misc（合法的"其它"），不是 other —— 写 other 会被 400 拒绝。
                 ("Category", recipe.get("Category") or sc.get("Category") or "misc"),
                 ("GameVersion", recipe.get("GameVersion") or sc.get("GameVersion") or ""),
-                ("Tags", recipe.get("Tags") or []),
+                ("Tags", tags),
                 ("SourceUrl", sc.get("SourceUrl") or
                  "https://github.com/ClouderyStudio/sc-plugins"),
                 # 协议以仓库根的 LICENSE（AGPL-3.0）为准；可用清单里的 License 覆盖。

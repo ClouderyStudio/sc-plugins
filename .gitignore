@@ -21,8 +21,10 @@
 !/.buildtools/
 .buildtools/*
 !/.buildtools/check-sources.py
+!/.buildtools/check_verbatim.py
 !/.buildtools/publish-release.py
 !/.buildtools/publish-to-scforge.py
+!/.buildtools/update-scforge-copy.py
 !/.buildtools/verify-scforge-slugs.py
 !/.buildtools/release-manifest.json
 
