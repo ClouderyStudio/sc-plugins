@@ -1,0 +1,15 @@
+{
+  "Comment": "打 tag 时要作为 GitHub Release 附件上传的插件 DLL。故意不含：基础插件（整合包，不开源）、授权壳与 payload 产物、HarmonyProbe（仅测试服用）。",
+  "CommentOnNames": "Name 一律用 ASCII：GitHub 的 Release 附件不支持中文名 —— 中文名会被 sanitize 成 default.dll，导致多个附件互相撞名（already_exists）。文件名不影响插件加载（核心按目录扫描 Plugins/*.dll），所以这里改成英文，映射表写进 Release 说明。",
+  "Assets": [
+    { "File": "网页控制台插件/网页控制台插件.dll",     "Name": "web-panel.dll",           "Plugin": "网页控制台插件" },
+    { "File": "和平区域插件/和平区域插件.dll",           "Name": "peace-zone.dll",          "Plugin": "和平区域插件" },
+    { "File": "清除低高空方块插件/清除低高空方块插件.dll", "Name": "clear-low-high.dll",      "Plugin": "清除低高空方块插件" },
+    { "File": "火柴记录插件/火柴记录插件.dll",           "Name": "match-record.dll",        "Plugin": "火柴记录插件" },
+    { "File": "个人进服密码插件/个人进服密码插件.dll",    "Name": "personal-code.dll",       "Plugin": "个人进服密码插件" },
+    { "File": "主城防破坏插件/主城防破坏插件.dll",        "Name": "major-city.dll",          "Plugin": "主城防破坏插件" },
+    { "File": "清理插件/清理插件.dll",                   "Name": "clear-entities.dll",      "Plugin": "清理插件" },
+    { "File": "聊天记录插件/聊天记录插件.dll",           "Name": "chat-record.dll",         "Plugin": "聊天记录插件" },
+    { "File": "无动物插件/无动物插件.dll",               "Name": "no-animal.dll",           "Plugin": "无动物插件" }
+  ]
+}

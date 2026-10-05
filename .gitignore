@@ -16,6 +16,14 @@
 !/LICENSE
 !/.github/
 
+# ---- CI / 发布脚本：仓库自检与发版要用到，但同目录的构建中间产物不入库 ----
+# （.buildtools 里还有 roslyn、ilspy、从服务端拷来的核心 DLL、备份源码，全部不放行）
+!/.buildtools/
+.buildtools/*
+!/.buildtools/check-sources.py
+!/.buildtools/publish-release.py
+!/.buildtools/release-manifest.json
+
 # ---- 开源插件（每个一个子文件夹）----
 !/网页控制台插件/
 !/和平区域插件/
