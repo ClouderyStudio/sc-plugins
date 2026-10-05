@@ -192,11 +192,11 @@ def main():
 
     # ---- 1. 编译 ----
     if args.skip_build:
-        log("[1/5] 跳过编译（--skip-build）")
+        log("[1/6] 跳过编译（--skip-build）")
     elif args.dry_run:
-        log("[1/5] 会执行：.buildtools/build-plugin.ps1")
+        log("[1/6] 会执行：.buildtools/build-plugin.ps1")
     else:
-        log("[1/5] 编译插件...")
+        log("[1/6] 编译插件...")
         ps = ["powershell", "-ExecutionPolicy", "Bypass", "-File",
               os.path.join(REPO_ROOT, ".buildtools", "build-plugin.ps1")]
         try:
@@ -216,12 +216,12 @@ def main():
     if missing:
         die("以下 DLL 不存在（先编译，或检查 release-manifest.json）：\n  "
             + "\n  ".join(missing))
-    log("[2/5] %d 个 DLL 均已就绪" % len(entries))
+    log("[2/6] %d 个 DLL 均已就绪" % len(entries))
 
     # ---- 3. git 提交 ----
     status = git(["status", "--porcelain"], check=False)
     if args.dry_run:
-        log("[3/5] 工作区变更：\n" + (status or "  （无）"))
+        log("[3/6] 工作区变更：\n" + (status or "  （无）"))
     else:
         if status:
             git(["add", "-A"], capture=True)
@@ -230,25 +230,25 @@ def main():
                 "发布 %s\n\n由 .buildtools/publish-release.py 自动提交。\n" % version)
             git(["commit", "-F", msg_path], check=False)
             os.remove(msg_path)
-            log("[3/5] 已提交源码变更")
+            log("[3/6] 已提交源码变更")
         else:
-            log("[3/5] 无源码变更，跳过提交")
+            log("[3/6] 无源码变更，跳过提交")
 
     # ---- 4. tag + push ----
     existing_tags = git(["tag", "--list"], check=False).split()
     if version in existing_tags:
-        log("[4/5] tag %s 已存在，复用" % version)
+        log("[4/6] tag %s 已存在，复用" % version)
     else:
-        log("[4/5] 打 tag %s" % version)
+        log("[4/6] 打 tag %s" % version)
         if not args.dry_run:
             git(["tag", "-a", version, "-m", "Release " + version], check=False)
 
     if args.no_push or args.dry_run:
-        log("[4/5] 跳过推送")
+        log("[4/6] 跳过推送")
     else:
         git(["push", "origin", "main"], check=False)
         git(["push", "origin", version], check=False)
-        log("[4/5] 已推送 main 与 tag %s" % version)
+        log("[4/6] 已推送 main 与 tag %s" % version)
 
     if args.dry_run:
         log("\n[dry-run] 计划上传的附件：")
@@ -259,7 +259,7 @@ def main():
 
     # ---- 5. Release ----
     token = read_github_token()
-    log("[5/5] 创建 / 获取 Release %s ..." % version)
+    log("[5/6] 创建 / 获取 Release %s ..." % version)
 
     existing = api("GET", "/repos/%s/releases/tags/%s" % (REPO, version), token,
                    allow_404=True)
