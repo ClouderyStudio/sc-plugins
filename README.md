@@ -119,4 +119,14 @@ python .buildtools/publish-to-scforge.py v1.0.0
 
 ## 许可
 
-MIT。详见 [LICENSE](LICENSE)。
+**GNU Affero General Public License v3.0（AGPL-3.0）**。详见 [LICENSE](LICENSE)。
+
+这是**强 copyleft** 协议，并且带 AGPL 特有的**网络条款**（第 13 条）：
+
+- 你可以自由使用、修改、分发这些插件，包括商用；
+- 但**分发修改版（或基于它的衍生作品）时必须同样以 AGPL-3.0 开源**；
+- 尤其注意：**哪怕你只是把修改过的版本部署成对外提供服务的网络应用**（比如架设一个
+  面向玩家的服务器控制台面板），也必须向使用者提供完整对应源码 —— 这正是 AGPL 相比
+  GPL 额外堵住的那个"网络服务不开源"的口子。
+
+> 早于本次变更发布的版本曾以 MIT 授权，那些已分发的副本仍可按 MIT 使用。

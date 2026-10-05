@@ -7,6 +7,7 @@
     "Kind": "plugin",
     "GameVersion": "x26.07.01",
     "Category": "misc",
+    "License": "AGPL-3.0",
     "Items": {
       "网页控制台插件": {
         "Slug": "web-panel",

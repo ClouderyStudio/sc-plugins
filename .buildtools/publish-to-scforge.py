@@ -356,7 +356,8 @@ def main():
                 ("Tags", recipe.get("Tags") or []),
                 ("SourceUrl", sc.get("SourceUrl") or
                  "https://github.com/ClouderyStudio/sc-plugins"),
-                ("License", "MIT"),
+                # 协议以仓库根的 LICENSE（AGPL-3.0）为准；可用清单里的 License 覆盖。
+                ("License", recipe.get("License") or sc.get("License") or "AGPL-3.0"),
                 ("Version", version),
                 ("Channel", "release"),
                 ("Changelog", recipe.get("Summary") or ("首个版本 %s" % version)),
