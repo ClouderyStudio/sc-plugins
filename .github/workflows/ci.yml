@@ -1,0 +1,33 @@
+name: 仓库自检
+
+# 说明：这里**不做编译**。插件要对着 Survivalcraft 服务端核心 DLL 编译，那是商业游戏的
+# 文件，不能进公开仓库，云端 runner 拿不到。所以 CI 只跑不需要核心 DLL 的检查，
+# 真正的构建 + Release 附件上传走本机的 .buildtools/publish-release.py。
+#
+# 检查内容见 .buildtools/check-sources.py：
+#   1. 逐字字符串引号配对（漏写一个引号会一次报几百个错且位置全偏，踩过）
+#   2. .gitignore 白名单是否覆盖了每个待发布插件（忘了放行 = 静默少发布一个）
+#   3. 版本库里有没有混入令牌 / 服务端目录 / 取证报告这类敏感文件
+#   4. 每个待发布插件是否都带 README
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 源码与仓库自检
+        run: python3 .buildtools/check-sources.py

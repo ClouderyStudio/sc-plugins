@@ -51,6 +51,32 @@ dotnet exec "<path>\csc.dll" ^
 
 每个插件的配置都写在自己名下：`Plugins/<插件名>/…`，互不影响。
 
+## 发版
+
+一条命令（本机）：
+
+```bat
+python .buildtools/publish-release.py v1.0.0
+```
+
+它会依次：编译 → 提交源码 → 打 tag → 推送 → 创建 GitHub Release → 把 9 个 DLL 传成附件。
+
+常用开关：
+
+| 开关 | 用途 |
+|---|---|
+| `--skip-build` | 已经编译过了，只做发布 |
+| `--dry-run` | 只打印要做什么，不动仓库也不上传 |
+| `--no-push` | 不推 git，只建 Release 并传附件 |
+
+要发布哪些 DLL 由 `.buildtools/release-manifest.json` 决定（刻意不含整合包与授权壳产物）。
+
+> ⚠️ **为什么不在 GitHub Actions 里编译**：插件需要对着 Survivalcraft 服务端核心 DLL
+> （`Survivalcraft.dll` 等）编译，那是商业游戏的文件，既不能传进公开仓库也没有 NuGet 包可装，
+> 云端 runner 拿到源码也编不出 DLL。所以云端 CI（`.github/workflows/ci.yml`）只跑**不需要核心 DLL** 的检查：
+> 逐字串引号配对、白名单是否覆盖每个待发布插件、有没有混入敏感文件、每个插件是否带 README
+> （见 `.buildtools/check-sources.py`）。构建与附件上传一律走本机的 `publish-release.py`。
+
 ## 注意事项
 
 - **命令白名单**：网页控制台插件可以在网页上执行服务端命令，而终端路径会跳过 AuthLevel 检查，所以务必配好 `Password` 与 `AllowedCommandPrefixes`，并尽量只绑 `127.0.0.1`。详见该插件的 README。

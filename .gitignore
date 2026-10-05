@@ -14,6 +14,7 @@
 !/.gitignore
 !/README.md
 !/LICENSE
+!/.github/
 
 # ---- 开源插件（每个一个子文件夹）----
 !/网页控制台插件/
@@ -31,6 +32,9 @@
 *.pdb
 *.partial
 compile.rsp
+
+# 预览页也是生成物（.buildtools/_extract-html.py 从源码里抽出来的），不入库
+网页控制台预览.html
 
 # ---- 本地环境 ----
 .vs/
