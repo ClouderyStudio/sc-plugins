@@ -1,68 +1,164 @@
 {
   "Comment": "打 tag 时要作为 GitHub Release 附件上传的插件 DLL。故意不含：基础插件（整合包，不开源）、授权壳与 payload 产物、HarmonyProbe（仅测试服用）。",
   "CommentOnNames": "Name 一律用 ASCII：GitHub 的 Release 附件不支持中文名 —— 中文名会被 sanitize 成 default.dll，导致多个附件互相撞名（already_exists）。文件名不影响插件加载（核心按目录扫描 Plugins/*.dll），所以这里改成英文，映射表写进 Release 说明。",
-  "CommentOnScforge": "Scforge 段给 .buildtools/publish-to-scforge.py 用：打 tag 后把每个 DLL 上传到 SCForge 平台（api.cldery.com）。slug 一经创建不可更改（它是资源对外的固定地址），定下来别动。Category 取 SCForge 分类键，GameVersion 取 /scforge/game-versions 里的值。不填 Scforge 段则整段跳过，只发 GitHub Release。",
+  "CommentOnScforge": "Scforge 段给 .buildtools/publish-to-scforge.py 用：打 tag 后把每个 DLL 上传到 SCForge 平台（api.cldery.com）。slug 一经创建不可更改（它是资源对外的固定地址），定下来别动。不填 Scforge 段则整段跳过，只发 GitHub Release。",
+  "CommentOnCategories": "Category 必须取 SCForge 的合法分类键，写错会被服务端 400 拒绝（'请选择有效的插件分类'）。合法值（从站点前端 index-*.js 提取，共 12 个）：gameplay 玩法扩展 / utilities 实用工具 / world 世界生成 / mobs 实体与生物 / storage 存储与物品 / economy 经济与商店 / protection 防护与安全 / performance 性能优化 / api 开发库 / integration 集成桥接 / misc 其它。另有频道键（不是分类）：release 正式版 / beta 测试版 / alpha 预览版。注意'其它'的键是 misc，不是 other。",
   "Scforge": {
     "Kind": "plugin",
     "GameVersion": "x26.07.01",
-    "Category": "other",
+    "Category": "misc",
     "Items": {
       "网页控制台插件": {
         "Slug": "web-panel",
         "Summary": "内嵌 HTTP 网页控制台：在线查看日志与玩家、执行管理命令",
-        "Tags": ["web", "admin", "console"]
+        "Description": "在服务端内嵌一个 HTTP 网页控制台，浏览器打开就能管服，不用连 RDP。\n\n**页签**\n- 概览：在线人数与上限、TPS、MSPT、游戏内天数与时刻、存档大小、运行时长、内存\n- 性能：自己采样的 TPS / MSPT 折线（服务端核心没有现成的 TPS，只能自量）\n- 玩家：列表（名字、坐标、血量、等级、模式、管理员标记、延迟）+ 踢人 / 治疗 / 击杀 / 切模式 / 清背包 / 无敌 / 重生\n- 背包：指定玩家的物品栏与装备栏\n- 终端：敲服务端命令，带**命令白名单**闸门\n- 日志：实时日志流（SSE 长连接，连不上自动退回 2 秒轮询）\n\n**安全**\n终端路径会跳过服务端的 AuthLevel 检查，所以口令与命令白名单是唯一的闸门。请务必配好 `Password` 与 `AllowedCommandPrefixes`，并尽量只绑 `127.0.0.1`。",
+        "Tags": [
+          "server",
+          "technical",
+          "open-source",
+          "chinese"
+        ],
+        "Category": "utilities"
       },
       "和平区域插件": {
         "Slug": "peace-zone",
         "Summary": "划分和平区域，区域内禁止玩家之间互相伤害",
-        "Tags": ["protection", "pvp"]
+        "Description": "在服务器上划定若干立方体「免战区」，区域内的玩家之间无法互相造成伤害。\n\n**适用场景**\n- 主城 / 出生点：新手落地不会被老玩家偷袭\n- 玩家自建家园：访客进屋参观时不会误伤主人\n- 活动区域：演出、建造比赛期间临时开启互不干扰\n\n**行为说明**\n- 判定同时考虑攻击者与受害者：**任一方在区域内即不结算伤害**，避免「区内打区外」这种单边豁免造成的漏洞\n- 攻击者会收到 `0.1` 点反噬伤害，提示语为「和平区域」\n- 区域以配置文件管理，支持多个矩形范围；管理员可豁免\n\n配置文件：`Plugins/和平区域插件/PeaceAreas.json`",
+        "Tags": [
+          "server",
+          "pvp",
+          "open-source",
+          "chinese"
+        ],
+        "Category": "protection"
       },
       "清除低高空方块插件": {
         "Slug": "clear-low-high",
         "Summary": "定期清理世界底层与顶层方块，控制存档体积",
-        "Tags": ["world", "cleanup"]
+        "Description": "定期清理世界底层与顶层的方块，控制存档体积、缓解加载压力。\n\n长期运行的服务器里，玩家在高空搭的建筑与挖到基岩层的方块会不断累积，既是存档膨胀的主要来源，也拖慢区块加载。本插件按可配置的高度范围定期清除。",
+        "Tags": [
+          "server",
+          "technical",
+          "open-source"
+        ],
+        "Category": "world"
       },
       "火柴记录插件": {
         "Slug": "match-record",
         "Summary": "记录火柴（打火石）的使用位置与时间，便于巡查追责",
-        "Tags": ["log", "audit"]
+        "Description": "记录火柴（打火石）的使用位置与时间，便于事后巡查追责。\n\n生存服里用打火石纵火是最难追查的破坏手段之一。本插件把每次使用的位置、玩家与时间落到日志文件，出事后可以直接定位到人。",
+        "Tags": [
+          "server",
+          "technical",
+          "open-source"
+        ],
+        "Category": "misc"
       },
       "个人进服密码插件": {
         "Slug": "personal-code",
         "Summary": "为每个玩家设置专属进服密码，密码不对直接拒绝进服",
-        "Tags": ["security", "login"]
+        "Description": "为每个玩家设置专属进服密码，密码不对直接拒绝进入服务器。\n\n适合需要额外一道身份校验的服务器：即使拿到了正版账号，没有对应密码也进不来。与白名单是两种思路 —— 白名单管「谁能进」，本插件管「怎么证明是你」。\n\n> ⚠️ 与白名单插件会抢同一个进服事件，功能重叠，不要同时启用。",
+        "Tags": [
+          "server",
+          "technical",
+          "open-source",
+          "chinese"
+        ],
+        "Category": "protection"
       },
       "主城防破坏插件": {
         "Slug": "major-city",
         "Summary": "保护主城区域：禁止破坏方块、放置方块与容器交互",
-        "Tags": ["protection", "spawn"]
+        "Description": "保护主城区域：禁止破坏方块、放置方块与容器交互。\n\n把出生点 / 主城圈成保护区，防止新人或恶意玩家在主城乱拆乱放。范围以配置文件管理，管理员可豁免。",
+        "Tags": [
+          "server",
+          "pvp",
+          "open-source",
+          "chinese"
+        ],
+        "Category": "protection"
       },
       "清理插件": {
         "Slug": "clear-entities",
         "Summary": "定时清理掉落物与多余实体，缓解服务端卡顿",
-        "Tags": ["cleanup", "performance"]
+        "Description": "定时清理掉落物与多余实体，缓解服务端卡顿。\n\n**可配项目**（`Plugins/清理插件/Clear.json`）\n- `Frequency`：巡检间隔（游戏分钟）\n- 掉落物：警告阈值 `PickablesWarnCount` / 清理阈值 `PickablesClearCount` / 存活上限 `PickablesMaxAgeSeconds`\n- 生物：警告阈值 `CreaturesWarnCount` / 清理阈值 `CreaturesClearCount` / 保留比例 `CreaturesKeepRatio`\n- `AddMessage`：清理时在聊天栏提示\n\n清理前会在聊天栏提示，不会让玩家毫无预兆地丢东西。",
+        "Tags": [
+          "server",
+          "technical",
+          "open-source",
+          "chinese"
+        ],
+        "Category": "performance"
       },
       "聊天记录插件": {
         "Slug": "chat-record",
         "Summary": "记录玩家聊天内容到本地文件，支持按玩家与时间检索",
-        "Tags": ["log", "chat"]
+        "Description": "记录玩家聊天内容到本地文件，支持按玩家与时间检索。\n\n用于纠纷取证与社区管理：谁在什么时候说了什么，都有据可查。",
+        "Tags": [
+          "server",
+          "technical",
+          "open-source"
+        ],
+        "Category": "misc"
       },
       "无动物插件": {
         "Slug": "no-animal",
         "Summary": "禁止世界生成动物，降低服务端实体压力",
-        "Tags": ["creature", "performance"]
+        "Description": "禁止世界生成动物，降低服务端实体压力。\n\n实体是生存战争服务端最主要的开销来源之一。对不需要动物的玩法（如纯建造服）直接关闭生成，能显著降低单核占用。\n\n> ⚠️ **默认 `Enabled: false`** —— 旧版装上就无条件清空生物表，「装插件 = 全服动物消失」且没有开关。本版必须显式设为 `true` 才生效。\n\n配置文件：`Plugins/无动物插件/NoAnimal.json`",
+        "Tags": [
+          "server",
+          "technical",
+          "open-source"
+        ],
+        "Category": "performance"
       }
     }
   },
   "Assets": [
-    { "File": "网页控制台插件/网页控制台插件.dll",     "Name": "web-panel.dll",           "Plugin": "网页控制台插件" },
-    { "File": "和平区域插件/和平区域插件.dll",           "Name": "peace-zone.dll",          "Plugin": "和平区域插件" },
-    { "File": "清除低高空方块插件/清除低高空方块插件.dll", "Name": "clear-low-high.dll",      "Plugin": "清除低高空方块插件" },
-    { "File": "火柴记录插件/火柴记录插件.dll",           "Name": "match-record.dll",        "Plugin": "火柴记录插件" },
-    { "File": "个人进服密码插件/个人进服密码插件.dll",    "Name": "personal-code.dll",       "Plugin": "个人进服密码插件" },
-    { "File": "主城防破坏插件/主城防破坏插件.dll",        "Name": "major-city.dll",          "Plugin": "主城防破坏插件" },
-    { "File": "清理插件/清理插件.dll",                   "Name": "clear-entities.dll",      "Plugin": "清理插件" },
-    { "File": "聊天记录插件/聊天记录插件.dll",           "Name": "chat-record.dll",         "Plugin": "聊天记录插件" },
-    { "File": "无动物插件/无动物插件.dll",               "Name": "no-animal.dll",           "Plugin": "无动物插件" }
+    {
+      "File": "网页控制台插件/网页控制台插件.dll",
+      "Name": "web-panel.dll",
+      "Plugin": "网页控制台插件"
+    },
+    {
+      "File": "和平区域插件/和平区域插件.dll",
+      "Name": "peace-zone.dll",
+      "Plugin": "和平区域插件"
+    },
+    {
+      "File": "清除低高空方块插件/清除低高空方块插件.dll",
+      "Name": "clear-low-high.dll",
+      "Plugin": "清除低高空方块插件"
+    },
+    {
+      "File": "火柴记录插件/火柴记录插件.dll",
+      "Name": "match-record.dll",
+      "Plugin": "火柴记录插件"
+    },
+    {
+      "File": "个人进服密码插件/个人进服密码插件.dll",
+      "Name": "personal-code.dll",
+      "Plugin": "个人进服密码插件"
+    },
+    {
+      "File": "主城防破坏插件/主城防破坏插件.dll",
+      "Name": "major-city.dll",
+      "Plugin": "主城防破坏插件"
+    },
+    {
+      "File": "清理插件/清理插件.dll",
+      "Name": "clear-entities.dll",
+      "Plugin": "清理插件"
+    },
+    {
+      "File": "聊天记录插件/聊天记录插件.dll",
+      "Name": "chat-record.dll",
+      "Plugin": "聊天记录插件"
+    },
+    {
+      "File": "无动物插件/无动物插件.dll",
+      "Name": "no-animal.dll",
+      "Plugin": "无动物插件"
+    }
   ]
 }

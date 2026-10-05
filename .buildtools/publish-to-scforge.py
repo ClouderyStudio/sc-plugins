@@ -322,13 +322,20 @@ def main():
                     fields=fields, files=[("Package", name, blob)])
             log("  ✓ %-16s 追加版本 %s（资源已存在）" % (slug, version))
         else:
+            summary = recipe.get("Summary") or plugin
+            # Description 是服务端必填项（缺了会 400 "请填写详细描述"）；
+            # 优先用清单里显式写的，没有就用 Summary 兜底 —— 详情页的正文另有 Readme 撑。
+            description = recipe.get("Description") or summary
+            readme = recipe.get("Readme") or summary
             fields = [
                 ("Kind", kind),
                 ("Name", plugin),
                 ("Slug", slug),
-                ("Summary", recipe.get("Summary") or plugin),
-                ("Readme", recipe.get("Summary") or plugin),
-                ("Category", recipe.get("Category") or sc.get("Category") or "other"),
+                ("Summary", summary),
+                ("Description", description),
+                ("Readme", readme),
+                # ⚠️ 兜底值必须是 misc（合法的"其它"），不是 other —— 写 other 会被 400 拒绝。
+                ("Category", recipe.get("Category") or sc.get("Category") or "misc"),
                 ("GameVersion", recipe.get("GameVersion") or sc.get("GameVersion") or ""),
                 ("Tags", recipe.get("Tags") or []),
                 ("SourceUrl", sc.get("SourceUrl") or

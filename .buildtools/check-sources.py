@@ -24,6 +24,33 @@ import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# SCForge 的合法资源分类键（写错会被服务端 400 拒绝："请选择有效的插件分类"）。
+# 值从站点前端 https://scforge.cldery.com/assets/index-*.js 里的分类表提取 ——
+# 接口本身没有 /categories 这类枚举端点，OpenAPI 里 Category 也只声明为普通 string。
+# ⚠️ "其它"的键是 misc，不是 other（踩过：发版时才发现 400）。
+SCForge_CATEGORIES = (
+    'gameplay',     # 玩法扩展
+    'utilities',    # 实用工具
+    'world',        # 世界生成
+    'mobs',         # 实体与生物
+    'storage',      # 存储与物品
+    'economy',      # 经济与商店
+    'protection',   # 防护与安全
+    'performance',  # 性能优化
+    'api',          # 开发库 / API
+    'integration',  # 集成桥接
+    'misc',         # 其它
+)
+
+# SCForge 的合法标签键（同样从站点前端 JS 提取）。
+# ⚠️ 标签不能自造：写平台不认的词会被服务端 400 拒绝（"不支持的标签：xxx"）。
+SCForge_TAGS = (
+    'survival', 'creative', 'pvp', 'pve', 'multiplayer', 'singleplayer',
+    'adventure', 'technical', 'decoration', 'magic', 'technology', 'food',
+    'transport', 'mining', 'farming', 'server', 'client', 'library',
+    'chinese', 'open-source',
+)
+
 # 绝不能出现在版本库里的路径模式（大小写不敏感）
 SENSITIVE = [
     r"scforge\.env",
@@ -254,6 +281,18 @@ def main():
             for key in ('Slug', 'Summary'):
                 if not recipe.get(key):
                     print('  FAIL 插件 %s 的 Scforge 配方缺少 %s' % (plugin, key))
+                    failures += 1
+            # 分类写错会被服务端 400 拒绝（"请选择有效的插件分类"），发版时才发现就晚了。
+            # 合法值从站点前端 JS 提取，见 SCForge_CATEGORIES。
+            cat = recipe.get('Category')
+            if cat and cat not in SCForge_CATEGORIES:
+                print('  FAIL 插件 %s 的分类 %r 不是 SCForge 的合法值。合法值：%s'
+                      % (plugin, cat, '/'.join(SCForge_CATEGORIES)))
+                failures += 1
+            for tag in (recipe.get('Tags') or []):
+                if tag not in SCForge_TAGS:
+                    print('  FAIL 插件 %s 的标签 %r 不是 SCForge 的合法值（标签不能自造）。合法值：%s'
+                          % (plugin, tag, '/'.join(SCForge_TAGS)))
                     failures += 1
         slugs = [r.get('Slug') for _p, r in plugins if r and r.get('Slug')]
         for s in sorted(set(slugs)):
