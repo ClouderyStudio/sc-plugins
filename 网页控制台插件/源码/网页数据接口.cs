@@ -7,7 +7,9 @@ using System.Text;
 using Engine;
 using Game;
 using Game.NetWork;
+using Game.NetWork.Packages;
 using Game.Server;
+using Game.Server.Plugins;
 
 namespace ScWebPanel
 {
@@ -184,6 +186,22 @@ namespace ScWebPanel
             sb.Append("\"name\":").Append(WebPanelJson.Quote(data?.Name ?? "?"));
             sb.Append(",\"guid\":").Append(WebPanelJson.Quote((data?.PlayerGUID ?? Guid.Empty).ToString()));
 
+            // 社区账号 id：这是**唯一可靠**的封禁标识。FRP 转发下所有玩家外面看到的是同一个
+            // 代理 IP，只有 CommunityAccountId 仍能唯一区分人。核心的 /ban add 用的就是它。
+            string accountId = Safe(() => data?.Client?.CommunityAccountId) ?? "-1";
+            sb.Append(",\"accountId\":").Append(WebPanelJson.Quote(accountId));
+            sb.Append(",\"isBanned\":").Append(
+                SafeBool(() => Game.Server.Plugins.BanUserPlugin.IsBan(accountId, null)) ? "true" : "false");
+
+            // 连接地址：Peer.Address 是**服务端实际看到的**对端地址。
+            // ⚠️ 走 FRP 转发时这里拿到的是代理机 IP（全服同一个），不是玩家真实公网 IP。
+            // 所以界面必须把这一点标出来，不能让管理员误以为这是玩家自己的 IP。
+            string peerIp = Safe(() => data?.Client?.Peer?.Address?.ToString()) ?? string.Empty;
+            sb.Append(",\"peerIp\":").Append(WebPanelJson.Quote(peerIp));
+            sb.Append(",\"peerIpBanned\":").Append(
+                (!string.IsNullOrEmpty(peerIp) &&
+                 SafeBool(() => Game.Server.Plugins.BanUserPlugin.IsBanIp(peerIp))) ? "true" : "false");
+
             // 血量：核心是 0~1，按 20 折算给界面
             float ratio = SafeFloat(() => health?.Health ?? 0f);
             sb.Append(",\"health\":").Append(Math.Round(ratio * HealthDisplayScale, 1));
@@ -311,6 +329,9 @@ namespace ScWebPanel
             sb.Append("{\"success\":true");
             sb.Append(",\"name\":").Append(WebPanelJson.Quote(player.PlayerData?.Name ?? "?"));
             sb.Append(",\"guid\":").Append(WebPanelJson.Quote(guid.ToString()));
+            // 当前游戏模式：前端据此决定"主背包"这一栏到底标成生存背包还是创造背包。
+            sb.Append(",\"gameMode\":").Append(WebPanelJson.Quote(
+                Safe(() => CommonLib.GetEffectiveGameMode(player.PlayerData).ToString()) ?? "-"));
 
             // 主背包
             sb.Append(",\"main\":");
@@ -457,10 +478,24 @@ namespace ScWebPanel
         /// <summary>
         /// 执行一个玩家管理动作。**在主线程调用**。
         ///
-        /// 每个动作最终都落到一条真实命令上（复用既有实现），而不是自己再写一遍逻辑 ——
-        /// 这样行为与游戏内敲命令完全一致，也不会绕过各模块自己的校验。
+        /// ⚠ 每个动作的命令行都是**对着核心反编译源码核过**的（见各 case 的注释）。
+        /// 之前这里凭印象拼命令，踩了一串坑：
+        /// - `/gamemode` 的参数顺序是 **玩家在前、模式在后**，写反了会报"模式无效: '玩家名'"；
+        /// - `/kick`、`/kill` **必须带子命令**（`user`），只写名字只会打印帮助文本；
+        /// - 核心的 `/clear` 是**清理世界掉落物/动物/方块实体**，跟"清背包"完全无关。
+        /// 所以现在：能用命令的走命令（行为与游戏内一致），没有对应命令的直接调组件 API。
         /// </summary>
         public static string ApplyPlayerAction(string guidText, string action, out string error)
+            => ApplyPlayerAction(guidText, action, null, out error);
+
+        /// <summary>
+        /// 执行一个玩家管理动作。
+        /// </summary>
+        /// <param name="ip">
+        /// 仅 <c>banip</c> / <c>unbanip</c> 用得到：要封/要解的那个 IP 地址，由管理员在面板上
+        /// **显式输入**。绝不允许调用方偷偷传"该玩家当前连接的地址" —— 见 banip 分支的注释。
+        /// </param>
+        public static string ApplyPlayerAction(string guidText, string action, string ip, out string error)
         {
             error = null;
 
@@ -478,51 +513,280 @@ namespace ScWebPanel
             }
 
             string name = player.PlayerData?.Name ?? guid.ToString();
+            // 社区账号 id —— 封禁/解封都认它（FRP 下 IP 不可靠，见下面对 ban 的注释）。
+            string accountId = Safe(() => player.PlayerData?.Client?.CommunityAccountId);
 
             switch ((action ?? string.Empty).Trim().ToLowerInvariant())
             {
+                // /kick user (玩家) (原因) —— 缺 user 子命令只会打印帮助文本，命令本身不算成功。
                 case "kick":
-                    return ExecuteViaCommand($"/kick {name}", $"已踢出 {name}", out error);
+                    return ExecuteViaCommand($"/kick user {name} 你已被管理员踢出服务器",
+                        $"已踢出 {name}", out error);
 
+                // /kill user (玩家) —— 同样必须带 user。
                 case "kill":
-                    return ExecuteViaCommand($"/kill {name}", $"已击杀 {name}", out error);
+                    return ExecuteViaCommand($"/kill user {name}", $"已击杀 {name}", out error);
 
+                // /admin heal <玩家> —— 基础插件的管理命令（核心没有 heal）。
                 case "heal":
-                    return ExecuteViaCommand($"/heal {name}", $"已回满 {name} 的生命", out error);
+                    return ExecuteViaCommand($"/admin heal {name}", $"已回满 {name} 的生命", out error);
 
+                // 核心的 /clear 是清世界掉落物，**不是**清背包 ⇒ 直接调库存组件。
                 case "clear":
-                    return ExecuteViaCommand($"/clear {name}", $"已清空 {name} 的背包", out error);
+                    return ClearPlayerInventory(player, name, out error);
 
+                // 基础插件的 /admin fix：血量/食物/睡眠/潮湿/体温一次回到舒适值。
+                case "fix":
+                    return ExecuteViaCommand($"/admin fix {name}", $"已修复 {name} 的生存状态", out error);
+
+                // /admin god <玩家>：切换无敌（核心的 IsInvulnerable 由它统管，走命令比直接改字段稳）。
+                case "godmode":
+                    return ExecuteViaCommand($"/admin god {name}", $"已切换 {name} 的无敌状态", out error);
+
+                // ⚠ 核心没有 "/tp2 <玩家> spawn" 这条命令（tp2 是基础插件自定义的，签名不同）。
+                //    "送回重生点"直接读世界的默认出生点再传送，不依赖任何命令。
                 case "respawn":
-                    return ExecuteViaCommand($"/tp2 {name} spawn", $"已将 {name} 送回重生点", out error);
+                    return SendToSpawn(player, name, out error);
 
+                // /gamemode <玩家|me> <模式> —— **玩家在前**。核心另有 /gmc、/gms 快捷方式，更稳。
                 case "gamemode":
                 {
-                    // 切换创造 <-> 生存
-                    var current = Safe(() => CommonLib.GetEffectiveGameMode(player.PlayerData).ToString());
-                    string target = string.Equals(current, "Creative", StringComparison.OrdinalIgnoreCase)
-                        ? "Survival"
-                        : "Creative";
-                    return ExecuteViaCommand($"/gamemode {target.ToLowerInvariant()} {name}",
-                        $"已将 {name} 切换为 {(target == "Creative" ? "创造" : "生存")}模式", out error);
+                    // 取当前生效模式（核心把"创造模式飞行"等状态也算进去，用 GetEffectiveGameMode 更准）
+                    string current = Safe(() => CommonLib.GetEffectiveGameMode(player.PlayerData).ToString());
+                    bool toCreative = !string.Equals(current, "Creative", StringComparison.OrdinalIgnoreCase);
+
+                    // 用快捷命令：/gmc <玩家> / /gms <玩家>，比 /gamemode 少一个容易写反的参数位。
+                    string quick = toCreative ? "gmc" : "gms";
+                    return ExecuteViaCommand($"/{quick} {name}",
+                        $"已将 {name} 切换为{(toCreative ? "创造" : "生存")}模式", out error);
                 }
 
-                case "godmode":
-                {
-                    var health = player.ComponentHealth;
-                    if (health == null)
+                // ---- 封禁：以**社区账号 id**为准，不碰 IP ----
+                // ⚠ 本服走 FRP 转发，服务端看到的远端 IP 是代理机的，所有玩家**共用同一个 IP**；
+                //   一旦按 IP 封禁（/ban ip add）就会把整个服务器的人一起挡在门外。
+                //   所以这里只提供"按账号封禁"（/ban add <账号id>），它与人一一对应、与网络路径无关。
+                case "ban":
+                    if (string.IsNullOrEmpty(accountId) || accountId == "-1")
                     {
-                        error = "该玩家没有生命组件";
+                        error = $"拿不到 {name} 的社区账号 id（可能是离线/单机账号），无法按账号封禁；" +
+                                "这种账号请改用游戏内控制台手动处理";
                         return null;
                     }
-                    bool now = !health.IsInvulnerable;
-                    health.IsInvulnerable = now;
-                    return now ? $"已开启 {name} 的无敌" : $"已关闭 {name} 的无敌";
+                    return ExecuteViaCommand($"/ban add {accountId}",
+                        $"已按账号封禁 {name}（账号 {accountId}）", out error);
+
+                case "unban":
+                    if (string.IsNullOrEmpty(accountId) || accountId == "-1")
+                    {
+                        error = "拿不到该玩家的社区账号 id，无法解封";
+                        return null;
+                    }
+                    return ExecuteViaCommand($"/ban remove {accountId}",
+                        $"已解封 {name}（账号 {accountId}）", out error);
+
+                // ---- 其它常用核心命令，统一走"借命令执行"，行为与游戏内完全一致 ----
+                // /ban list —— 列出封禁名单（回显会带回来给前端看）
+                case "banlist":
+                    return ExecuteViaCommand("/ban list", "封禁名单", out error);
+
+                // /ban ip list —— 列出 IP 封禁名单
+                case "baniplist":
+                    return ExecuteViaCommand("/ban ip list", "IP 封禁名单", out error);
+
+                // ---- 封禁 IP：提供两条路，都不允许"一键按当前连接 IP 封" ----
+                //
+                // ⚠⚠ 本服走 FRP 转发时，服务端看到的 Peer.Address 是**代理机地址**，全体玩家共用；
+                //     如果面板提供"按该玩家当前 IP 封禁"并一键执行，等于把整个服务器封掉。
+                //     所以这里刻意把"封某个具体 IP"做成**需要管理员自己显式输入 IP**的动作，
+                //     面板会先把候选 IP（该玩家连接的地址）显示出来供参考和确认，但绝不代填代提交。
+                case "banip":
+                {
+                    // ip 由调用方在 payload 里显式给出，这里只做格式校验后转交核心
+                    string targetIp = ip;
+                    if (string.IsNullOrWhiteSpace(targetIp))
+                    {
+                        error = "请先填写要封禁的 IP 地址";
+                        return null;
+                    }
+                    targetIp = targetIp.Trim();
+                    if (!LooksLikeIp(targetIp))
+                    {
+                        error = "IP 格式不正确，只接受 IPv4 / IPv6（不要带端口）";
+                        return null;
+                    }
+                    return ExecuteViaCommand($"/ban ip add {targetIp}",
+                        $"已封禁 IP {targetIp}（该地址上的在线玩家会被立即断开）", out error);
                 }
+
+                // /ban ip remove (ip)
+                case "unbanip":
+                {
+                    string targetIp = (ip ?? string.Empty).Trim();
+                    if (string.IsNullOrWhiteSpace(targetIp) || !LooksLikeIp(targetIp))
+                    {
+                        error = "IP 格式不正确，只接受 IPv4 / IPv6（不要带端口）";
+                        return null;
+                    }
+                    return ExecuteViaCommand($"/ban ip remove {targetIp}",
+                        $"已解封 IP {targetIp}", out error);
+                }
+
+                // /ban ip user (账号id) —— 核心的语义是"记下这个账号，把它**当前**的 IP 也加进封禁表"。
+                // 这正是 FRP 环境下相对安全的做法：IP 是由核心按账号现场关联出来的，
+                // 而不是面板拿一个可能全是代理机的地址去盲封。
+                case "banipuser":
+                    if (string.IsNullOrEmpty(accountId) || accountId == "-1")
+                    {
+                        error = $"拿不到 {name} 的社区账号 id，无法记录其 IP";
+                        return null;
+                    }
+                    return ExecuteViaCommand($"/ban ip user {accountId}",
+                        $"已记录 {name}（账号 {accountId}）的 IP 并加入封禁表", out error);
+
+                // /ban ip ruser (账号id) —— 解除"跟账号走的 IP 记录"
+                case "unbanipuser":
+                    if (string.IsNullOrEmpty(accountId) || accountId == "-1")
+                    {
+                        error = "拿不到该玩家的社区账号 id，无法解除其 IP 记录";
+                        return null;
+                    }
+                    return ExecuteViaCommand($"/ban ip ruser {accountId}",
+                        $"已解除 {name}（账号 {accountId}）的 IP 记录", out error);
+
+                // /time set day|night —— 切昼夜
+                case "day":
+                    return ExecuteViaCommand("/time set day", "已把时间设为白天", out error);
+                case "night":
+                    return ExecuteViaCommand("/time set night", "已把时间设为夜晚", out error);
+
+                // /admin tell <玩家> <消息> —— 私聊提示（前端会带上自定义文本时用另一个入口）
+                case "tell":
+                    return ExecuteViaCommand($"/admin tell {name} 管理员正在关注你",
+                        $"已私聊提醒 {name}", out error);
 
                 default:
                     error = "不支持的动作：" + action;
                     return null;
+            }
+        }
+
+        /// <summary>
+        /// 清空玩家背包。核心**没有**这条命令（`/clear` 是清世界掉落物），所以直接动库存组件。
+        ///
+        /// ⚠ <see cref="ComponentMiner.Inventory"/> 的类型是 <c>IInventory</c>，而且**创造模式下它可能
+        /// 就指向创造背包**。所以这里不去按"生存/创造"分两份清，而是：
+        /// 主库存 + 创造背包（若存在）各清一遍，保证两种模式下的东西都被清掉、不会漏。
+        /// 护甲不动 —— 那是"装备"不是"背包"，扒装备是另一个独立动作。
+        /// </summary>
+        private static string ClearPlayerInventory(ComponentPlayer player, string name, out string error)
+        {
+            error = null;
+
+            try
+            {
+                int cleared = 0;
+
+                // IInventory 是接口，直接遍历它的槽位
+                IInventory main = player.ComponentMiner?.Inventory;
+                if (main != null)
+                {
+                    for (int i = 0; i < main.SlotsCount; i++)
+                    {
+                        int count = main.GetSlotCount(i);
+                        if (count <= 0) continue;
+                        main.RemoveSlotItems(i, count);
+                        main.OnSlotChange(i);
+                        cleared++;
+                    }
+                }
+
+                // 创造背包独立存在（ComponentCreativeInventory），创造模式下才有内容
+                var creative = player.Entity?.FindComponent<ComponentCreativeInventory>();
+                if (creative != null)
+                {
+                    for (int i = 0; i < creative.SlotsCount; i++)
+                    {
+                        int count = creative.GetSlotCount(i);
+                        if (count <= 0) continue;
+                        creative.RemoveSlotItems(i, count);
+                        cleared++;
+                    }
+                }
+
+                // 清完必须同步一次，否则玩家屏幕上的快捷栏还显示着旧物品。
+                // 只用核心自己的做法：ComponentInventoryPackage(背包, 当前槽) —— 见反编译源里
+                // `QueuePackage(new ComponentInventoryPackage(ComponentMiner.Inventory, ...))`。
+                // ⚠ To 必须显式设成该玩家的 Client：不设会**广播给所有人**。
+                var client = player.PlayerData?.Client;
+                if (client != null && main != null)
+                {
+                    CommonLib.Net.QueuePackage(new ComponentInventoryPackage(main, main.ActiveSlotIndex)
+                    {
+                        To = client
+                    });
+                }
+
+                return cleared == 0
+                    ? $"{name} 的背包本来就是空的"
+                    : $"已清空 {name} 的背包（{cleared} 个格子）";
+            }
+            catch (Exception ex)
+            {
+                error = "清空背包时出错：" + ex.Message;
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 把玩家送回世界出生点。核心没有现成命令（`/tp2` 是基础插件自定义的、签名不同），
+        /// 所以照搬基础插件主城模块那套**已验证可行**的传送写法：
+        /// 设位置 → 同步 <c>netPosition</c> → 发包让客户端跟上。坐骑要一起挪，否则会撕裂。
+        /// </summary>
+        private static string SendToSpawn(ComponentPlayer player, string name, out string error)
+        {
+            error = null;
+
+            try
+            {
+                ComponentBody body = player.ComponentBody;
+                if (body == null || !body.IsAddedToProject)
+                {
+                    error = "该玩家没有位置组件（可能正在加载）";
+                    return null;
+                }
+
+                // 出生点在 SubsystemPlayers 上（**实例属性**，不是静态字段）
+                var subsystem = GameManager.Project?.FindSubsystem<SubsystemPlayers>();
+                if (subsystem == null)
+                {
+                    error = "服务器项目未就绪";
+                    return null;
+                }
+
+                Vector3 spawn = subsystem.GlobalSpawnPosition;
+                var target = new Vector3(spawn.X, spawn.Y + 0.5f, spawn.Z);   // 抬高半格，避免卡进地面
+
+                // 坐骑和玩家一起挪（基础插件里踩过：不挪坐骑会把玩家"拽"回原地）
+                ComponentBody mountBody = player.ComponentRider?.Mount?.ComponentBody;
+                if (mountBody != null && mountBody.IsAddedToProject)
+                {
+                    Vector3 delta = target - body.Position;
+                    mountBody.Position += delta;
+                    mountBody.netPosition.SetNext(mountBody.Position);
+                }
+
+                body.Position = target;
+                body.netPosition.SetNext(target);
+
+                CommonLib.Net.QueuePackage(new ComponentPlayerPackage(
+                    player, ComponentPlayerPackage.PlayerAction.PositionSet));
+
+                return $"已将 {name} 送回出生点";
+            }
+            catch (Exception ex)
+            {
+                error = "传送失败：" + ex.Message;
+                return null;
             }
         }
 
@@ -535,8 +799,8 @@ namespace ScWebPanel
             string output = WebPanelCommandRunner.Execute(command, out error);
             if (error != null) return null;
 
-            // 命令执行了但没报错 —— 有些命令失败也是走"回显一行提示"而不是抛异常，
-            // 所以把回显一并带回前端，让人能看见真实结果。
+            // 命令执行了但没报错 —— 有些命令失败也是走"回显一行提示"而不是抛异常
+            // （比如 /kick 参数不对时只打印帮助文本），所以把回显一并带回前端让人看见真实结果。
             return string.IsNullOrWhiteSpace(output) ? successMessage : successMessage + "：" + output;
         }
 
@@ -645,6 +909,46 @@ namespace ScWebPanel
             {
                 return false;
             }
+        }
+
+        /// <summary>
+        /// 粗校验一个字符串像不像 IP 地址（IPv4 或 IPv6），**不接受带端口**。
+        ///
+        /// 为什么不用 <c>IPAddress.TryParse</c>：它会接受 "1"、"12345" 这类裸数字当成
+        /// IPv4 简写（等价于 0.0.0.1 / 0.0.48.57），拿这种值去封禁纯属误伤。
+        /// 这里宁可严一点：只认"点分四段 0-255"或"含冒号的十六进制"。
+        /// </summary>
+        private static bool LooksLikeIp(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            text = text.Trim();
+            if (text.Length > 45) return false;
+
+            // IPv6：含冒号，且只由十六进制字符与冒号组成
+            if (text.IndexOf(':') >= 0)
+            {
+                foreach (char c in text)
+                {
+                    bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+                              (c >= 'A' && c <= 'F') || c == ':';
+                    if (!ok) return false;
+                }
+                return true;
+            }
+
+            // IPv4：恰好四段，每段 0-255，没有前导零以外的花样
+            string[] parts = text.Split('.');
+            if (parts.Length != 4) return false;
+            foreach (string part in parts)
+            {
+                if (part.Length == 0 || part.Length > 3) return false;
+                foreach (char c in part)
+                {
+                    if (c < '0' || c > '9') return false;
+                }
+                if (!int.TryParse(part, out int value) || value < 0 || value > 255) return false;
+            }
+            return true;
         }
     }
 }

@@ -88,6 +88,16 @@ button{font-family:inherit}
 }
 .pill.warn{background:#fdf0dc;color:#8a5d12}
 .pill.err{background:#fbe6e6;color:#8c3535}
+.pill.dim{background:#f1f3f2;color:var(--text-dim);font-weight:500}
+
+/* 卡片内的小页签（封禁名单：账号 / IP 两个视图切换） */
+.tabs{display:flex;gap:6px;margin:0 0 12px}
+.tabs button{
+  border:1px solid var(--line);background:#fff;border-radius:8px;padding:6px 14px;
+  font-size:13px;cursor:pointer;color:var(--text-dim);font-family:inherit;
+}
+.tabs button:hover{border-color:var(--green)}
+.tabs button.on{background:var(--green-pale);border-color:var(--green);color:var(--green-dark);font-weight:600}
 
 /* ---------- 布局 ---------- */
 .wrap{max-width:1180px;margin:0 auto;padding:20px 22px 60px}
@@ -145,6 +155,8 @@ tbody tr:hover{background:var(--card-2)}
 .btn.primary:hover{background:var(--green-dark);border-color:var(--green-dark)}
 .btn.danger{color:var(--red);border-color:#eccfcf}
 .btn.danger:hover{background:#fbe6e6;border-color:var(--red)}
+.btn.warn{color:#8a5d12;border-color:#e8d5ac}
+.btn.warn:hover{background:#fdf0dc;border-color:#c99a2e}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .btnrow{display:flex;gap:6px;flex-wrap:wrap}
 
@@ -193,6 +205,65 @@ tbody tr:hover{background:var(--card-2)}
   font-size:12px;font-weight:700;color:#fff;background:var(--green-light);
 }
 .slot.empty{opacity:.4}
+
+/* 背包里的可折叠区块（创造背包默认收起，少占地方） */
+.invFold{
+  margin-top:6px;border:1px solid var(--line);border-radius:var(--radius-sm);
+  background:var(--card-2);overflow:hidden;
+}
+.invFold>summary{
+  list-style:none;cursor:pointer;padding:10px 12px;
+  font-size:12px;font-weight:600;color:var(--text);
+  display:flex;align-items:center;gap:8px;user-select:none;
+}
+.invFold>summary::-webkit-details-marker{display:none}
+.invFold>summary::before{
+  content:""\25B8"";color:var(--text-dim);font-size:11px;transition:transform .15s;
+}
+.invFold[open]>summary::before{transform:rotate(90deg)}
+.invFold>summary:hover{color:var(--green-dark)}
+.invFold.foldEmpty>summary{color:var(--text-dim)}
+.invFold .foldMeta{margin-left:auto;font-weight:400;color:var(--text-dim)}
+.invFold .foldBody{padding:0 12px 4px;border-top:1px solid var(--line)}
+.invFold .foldBody .inv{margin-top:12px}
+
+/* ---------- 存档目录 ---------- */
+.crumb{
+  font-family:var(--mono);font-size:12px;color:var(--text-dim);
+  padding:8px 10px;background:var(--card-2);border:1px solid var(--line);
+  border-radius:var(--radius-sm);margin-bottom:12px;word-break:break-all;
+}
+.crumb a{color:var(--green-dark);cursor:pointer;text-decoration:none}
+.crumb a:hover{text-decoration:underline}
+.filelist{border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden}
+.filelist .frow{
+  display:flex;align-items:center;gap:10px;padding:8px 12px;font-size:13px;
+  border-bottom:1px solid var(--line);
+}
+.filelist .frow:last-child{border-bottom:none}
+.filelist .frow:hover{background:var(--card-2)}
+.filelist .frow .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.filelist .frow .nm.dir{cursor:pointer;color:var(--green-dark);font-weight:600}
+.filelist .frow .nm.dir:hover{text-decoration:underline}
+.filelist .frow .sz{width:88px;text-align:right;color:var(--text-dim);font-size:12px}
+.filelist .frow .tm{width:150px;text-align:right;color:var(--text-dim);font-size:12px}
+.filelist .frow .kd{width:64px;color:var(--text-dim);font-size:11px;text-align:center}
+.filepreview{
+  margin:0;padding:14px;background:#1f2419;color:#d8e6c8;border-radius:var(--radius-sm);
+  font-size:12px;line-height:1.55;font-family:var(--mono);overflow:auto;max-height:520px;
+  white-space:pre-wrap;word-break:break-all;
+}
+
+/* ---------- 设置表单 ---------- */
+.form{display:flex;flex-direction:column;gap:14px;max-width:620px}
+.form label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--text)}
+.form label.chk{flex-direction:row;align-items:center;gap:8px;cursor:pointer}
+.form input[type=text],.form input[type=number],.form input[type=password],.form input:not([type]){
+  padding:9px 11px;border:1px solid var(--line);border-radius:var(--radius-sm);
+  font-size:13px;background:var(--card);color:var(--text);font-family:inherit;
+}
+.form input:focus{outline:none;border-color:var(--green-light);box-shadow:0 0 0 3px var(--green-pale)}
+.form .tip{font-size:11.5px;color:var(--text-dim);line-height:1.5}
 
 /* ---------- 登录 ---------- */
 .login{
@@ -253,8 +324,12 @@ tbody tr:hover{background:var(--card-2)}
       <button data-view=""overview"" class=""on"">总览</button>
       <button data-view=""players"">玩家</button>
       <button data-view=""console"">控制台</button>
+      <button data-view=""files"">存档</button>
+      <button data-view=""settings"">设置</button>
     </div>
     <div class=""right"">
+      <span id=""buildTag"" class=""pill dim"" title=""当前页面构建版本。若与实际功能对不上，点右边按钮强制刷新。""></span>
+      <button class=""btn"" id=""hardReload"" title=""忽略浏览器缓存，重新拉取页面"">强制刷新</button>
       <span id=""conn"" class=""pill"">连接中</span>
       <button class=""btn"" id=""logout"">退出</button>
     </div>
@@ -296,6 +371,21 @@ tbody tr:hover{background:var(--card-2)}
           <span class=""sub""><button class=""btn"" id=""invClose"">关闭</button></span></h2>
         <div id=""invBody""></div>
       </div>
+
+      <!-- 封禁管理：账号名单与 IP 名单分开展示，IP 那一块自带 FRP 风险提示 -->
+      <div class=""card"" id=""banCard"">
+        <h2>封禁名单
+          <span class=""sub"">
+            <button class=""btn"" id=""banRefresh"">刷新</button>
+            <button class=""btn"" id=""banAddIp"">手动封 IP</button>
+          </span></h2>
+        <div class=""tabs"" id=""banTabs"">
+          <button data-bantab=""user"" class=""on"">账号封禁</button>
+          <button data-bantab=""ip"">IP 封禁</button>
+        </div>
+        <div id=""banBody""><div class=""empty"">点「刷新」载入名单</div></div>
+        <p class=""tip"" id=""banTip""></p>
+      </div>
     </div>
 
     <!-- ============ 控制台 ============ -->
@@ -314,6 +404,69 @@ tbody tr:hover{background:var(--card-2)}
           <button class=""btn primary"" id=""run"">发送</button>
         </div>
         <div class=""hint"">可用命令：<span id=""cmdHint"" class=""mono""></span></div>
+      </div>
+    </div>
+
+    <!-- ============ 存档目录 ============ -->
+    <div class=""view"" id=""v-files"">
+      <div class=""card"">
+        <h2>存档目录 <span class=""sub"">只读浏览服务端的数据目录（存档 / 日志 / 玩家数据）</span></h2>
+        <div class=""crumb"" id=""filePath""></div>
+        <div id=""fileList""><div class=""empty"">加载中…</div></div>
+      </div>
+      <div class=""card"" id=""fileViewCard"" style=""display:none"">
+        <h2><span id=""fileViewName"">文件</span>
+          <span class=""sub""><button class=""btn"" id=""fileViewClose"">关闭</button></span></h2>
+        <div class=""hint"" id=""fileViewMeta""></div>
+        <pre class=""filepreview"" id=""fileViewBody""></pre>
+      </div>
+    </div>
+
+    <!-- ============ 设置 ============ -->
+    <div class=""view"" id=""v-settings"">
+      <div class=""card"">
+        <h2>面板设置 <span class=""sub"">改完点「保存」，能热生效的会立即生效</span></h2>
+        <div class=""form"">
+          <label>面板标题<input id=""setTitle"" placeholder=""服务器控制台""></label>
+          <label>监听地址
+            <input id=""setHost"" placeholder=""127.0.0.1"">
+            <span class=""tip"">127.0.0.1 = 仅本机；填 + 或 * = 允许外网（需要 URL ACL 授权，改这个务必先设强口令）</span>
+          </label>
+          <label>监听端口<input id=""setPort"" type=""number"" placeholder=""8080""></label>
+          <label>登录有效期（分钟）<input id=""setSession"" type=""number""></label>
+          <label>日志缓冲行数<input id=""setLogLines"" type=""number""></label>
+          <label>登录失败上限<input id=""setMaxFail"" type=""number""></label>
+          <label>失败后封禁秒数<input id=""setLockout"" type=""number""></label>
+          <label>请求超时（秒）<input id=""setTimeout"" type=""number""></label>
+          <label class=""chk""><input type=""checkbox"" id=""setSse""> 实时日志用 SSE 推送（关掉则前端轮询）</label>
+          <label class=""chk""><input type=""checkbox"" id=""setLogActions""> 记录每次网页登录与命令执行</label>
+          <label>允许的命令前缀
+            <input id=""setAllowed"" placeholder=""help,list,admin,tp,kill,kick…"">
+            <span class=""tip"">逗号分隔；这是网页终端的**唯一权限闸门**，留空 = 一条都不许执行</span>
+          </label>
+          <label>禁止的命令前缀
+            <input id=""setDenied"" placeholder=""stop,ban"">
+            <span class=""tip"">优先级高于白名单</span>
+          </label>
+        </div>
+        <div class=""btnrow"" style=""margin-top:14px"">
+          <button class=""btn primary"" id=""setSave"">保存设置</button>
+          <button class=""btn"" id=""setReload"">重载配置</button>
+          <span class=""dim mono"" id=""setStatus"" style=""margin-left:8px""></span>
+        </div>
+      </div>
+
+      <div class=""card"">
+        <h2>修改登录口令</h2>
+        <div class=""form"">
+          <label>旧口令<input id=""pwOld"" type=""password"" autocomplete=""current-password""></label>
+          <label>新口令<input id=""pwNew"" type=""password"" autocomplete=""new-password"">
+            <span class=""tip"">至少 6 位。改完所有登录会失效，需要重新登录。</span></label>
+          <label class=""chk""><input type=""checkbox"" id=""pwHash"" checked> 只保存哈希（推荐，配置文件被看到也不泄露原口令）</label>
+        </div>
+        <div class=""btnrow"" style=""margin-top:14px"">
+          <button class=""btn primary"" id=""pwSave"">更新口令</button>
+        </div>
       </div>
     </div>
 
@@ -428,6 +581,8 @@ function refresh(){
   if(VIEW === 'overview') loadOverview();
   else if(VIEW === 'players') loadPlayers();
   else if(VIEW === 'console') loadLogs();
+  else if(VIEW === 'files') loadFiles(FILE_PATH);
+  else if(VIEW === 'settings') loadSettings();
   loadMetrics();
 }
 
@@ -575,17 +730,26 @@ function playerTable(list, withActions){
       '<td>' + esc(p.gameMode) + '</td>' +
       '<td class=""mono"">' + (p.ping == null ? '<span class=""dim"">—</span>' : p.ping + 'ms') + '</td>' +
       '<td class=""dim"">' + esc(p.onlineGameTime) + '</td>' +
+      '<td class=""mono dim"">' + (p.peerIp
+          ? esc(p.peerIp) + (p.peerIpBanned ? ' <span class=""pill warn"" style=""padding:1px 6px;font-size:11px"">已封</span>' : '')
+          : '<span>—</span>') + '</td>' +
       (withActions ? '<td><div class=""btnrow"">' +
           '<button class=""btn"" data-act=""inventory"" data-g=""' + esc(p.guid) + '"">背包</button>' +
           '<button class=""btn"" data-act=""heal"" data-g=""' + esc(p.guid) + '"">回血</button>' +
+          '<button class=""btn"" data-act=""fix"" data-g=""' + esc(p.guid) + '"">修复状态</button>' +
           '<button class=""btn"" data-act=""gamemode"" data-g=""' + esc(p.guid) + '"">切换模式</button>' +
           '<button class=""btn"" data-act=""godmode"" data-g=""' + esc(p.guid) + '"">无敌</button>' +
-          '<button class=""btn danger"" data-act=""kick"" data-g=""' + esc(p.guid) + '"">踢出</button>' +
+          '<button class=""btn"" data-act=""respawn"" data-g=""' + esc(p.guid) + '"">送回出生点</button>' +
+          '<button class=""btn"" data-act=""kick"" data-g=""' + esc(p.guid) + '"">踢出</button>' +
+          '<button class=""btn danger"" data-act=""ban"" data-g=""' + esc(p.guid) + '"">' +
+            (p.isBanned ? '已在封禁名单' : '封禁账号') + '</button>' +
+          '<button class=""btn warn"" data-act=""banip"" data-g=""' + esc(p.guid) +
+            '"" data-ip=""' + esc(p.peerIp || '') + '"">封禁 IP</button>' +
         '</div></td>' : '') +
       '</tr>';
   }
   return '<div class=""tablewrap""><table><thead><tr>' +
-    '<th>玩家</th><th>生命</th><th>坐标</th><th>模式</th><th>延迟</th><th>在线时长</th>' +
+    '<th>玩家</th><th>生命</th><th>坐标</th><th>模式</th><th>延迟</th><th>在线时长</th><th>连接地址</th>' +
     (withActions ? '<th>操作</th>' : '') +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
@@ -598,9 +762,74 @@ document.addEventListener('click', function(ev){
   var guid = btn.getAttribute('data-g');
   if(act === 'inventory'){ openInventory(guid, btn); return; }
 
-  var label = { kick:'踢出', heal:'回血', kill:'击杀', clear:'清空背包',
-                respawn:'送回重生点', gamemode:'切换游戏模式', godmode:'切换无敌' }[act] || act;
-  if(!confirm('确定要对该玩家执行「' + label + '」吗？')) return;
+  var label = { kick:'踢出', heal:'回血', kill:'击杀', clear:'清空背包', fix:'修复生存状态',
+                respawn:'送回出生点', gamemode:'切换游戏模式', godmode:'切换无敌',
+                ban:'封禁账号', unban:'解封账号', banip:'封禁 IP', unbanip:'解除 IP 封禁',
+                banipuser:'记录账号 IP 并封禁', unbanipuser:'解除账号 IP 记录' }[act] || act;
+
+  // ---- IP 封禁：必须管理员**手填** IP，面板只做候选提示，绝不代填代提交 ----
+  // ⚠ 本服走 FRP，服务端看到的连接地址是代理机的、全服共用；拿它一键封 = 封全服。
+  if(act === 'banip'){
+    var peer = btn.getAttribute('data-ip') || '';
+    var others = document.querySelectorAll('#playerTable button[data-act=""banip""]');
+    var sameCount = 0;
+    var seen = null;
+    for(var k=0;k<others.length;k++){
+      var v = others[k].getAttribute('data-ip');
+      if(!v) continue;
+      if(seen === null) seen = v;
+      else if(seen !== v){ sameCount = -1; break; }
+    }
+    var sharedHint = '';
+    if(seen !== null && sameCount === 0 && others.length > 1){
+      // 所有在线玩家报的是同一个连接地址 —— 这是 FRP 转发的典型特征
+      sharedHint = '\n\n⚠⚠ 检测到所有在线玩家的连接地址都是同一个（' + seen + '）。\n' +
+                   '这说明服务端看到的是【代理机地址】，不是玩家真实 IP。\n' +
+                   '封这个地址会把全体在线玩家一起挡在门外！\n' +
+                   '这种情况请改用「封禁账号」。';
+    }
+    var hint = peer
+      ? '\n\n该玩家当前的连接地址是 ' + peer + '。\n' +
+        '⚠ 请确认你填的是玩家【真实公网 IP】，而不是服务端看到的连接地址（可能是代理机）。'
+      : '\n\n（该玩家没有可读到的连接地址。）';
+    var input = prompt(
+      '要封禁哪个 IP？（可直接编辑下面预填的地址）\n' +
+      '只接受 IP，不要带端口。' + hint + sharedHint, peer);
+    if(input === null) return;
+    input = input.trim();
+    if(!input){ toast('没有填 IP'); return; }
+    // 兜底：填回去正好是那个「全服共用」的地址时，必须再确认一次
+    if(seen !== null && input === seen && others.length > 1){
+      if(!confirm('你填的正是所有在线玩家共用的连接地址（' + seen + '）。\n\n' +
+                  '继续封禁会立刻把所有在线玩家踢下线。真的要这样吗？')) return;
+    }
+    btn.disabled = true;
+    api('/api/players/action', { method:'POST', body: JSON.stringify({ guid: guid, action: act, ip: input }) })
+      .then(function(d){
+        btn.disabled = false;
+        if(!d.success){ toast(d.message || '操作失败'); return; }
+        toast(d.message || ('已封禁 IP ' + input));
+        loadPlayers();
+      })
+      .catch(function(e){ btn.disabled = false; toast(e.message); });
+    return;
+  }
+
+  // 封禁是重动作，确认框要讲清楚「封的是账号不是 IP」，别让管理员误以为按 IP 封。
+  var ask = '确定要对该玩家执行「' + label + '」吗？';
+  if(act === 'ban')
+    ask = '确定封禁该玩家的账号吗？\n\n' +
+          '—— 本服的封禁按【社区账号】执行，与该玩家从哪个 IP 连进来无关，这是最稳的封禁方式。\n\n' +
+          '封禁立即生效，该玩家会被踢下线且无法再进入。';
+  if(act === 'banipuser')
+    ask = '确定记录该玩家的 IP 并加入封禁表吗？\n\n' +
+          '—— 这条走核心的 /ban ip user <账号id>：由核心按账号现场关联 IP，' +
+          '不用你猜地址。之后该玩家再连进来会被挡。\n\n' +
+          '⚠ 若本服经 FRP 转发，关联到的 IP 可能是全服共用的代理地址，' +
+          '执行前请想清楚 —— 一旦误伤可以用「解除账号 IP 记录」回退。';
+  if(act === 'unbanipuser')
+    ask = '确定解除该玩家的 IP 记录吗？（/ban ip ruser）';
+  if(!confirm(ask)) return;
 
   btn.disabled = true;
   api('/api/players/action', { method:'POST', body: JSON.stringify({ guid: guid, action: act }) })
@@ -618,24 +847,51 @@ function openInventory(guid, btn){
   api('/api/inventory?guid=' + encodeURIComponent(guid)).then(function(d){
     btn.disabled = false;
     if(!d.success){ toast(d.message || '读取失败'); return; }
+    var creative = d.gameMode === 'Creative';
     $('invCard').style.display = 'block';
-    $('invTitle').textContent = d.name + ' 的背包';
-    $('invBody').innerHTML =
-      invSection('快捷栏与主背包', d.main) +
-      invSection('装备栏', d.armor) +
-      (d.creative && hasSlots(d.creative) ? invSection('创造背包', d.creative) : '');
+    $('invTitle').textContent = d.name + ' 的背包' +
+      (d.gameMode && d.gameMode !== '-' ? '（' + (creative ? '创造' : '生存') + '模式）' : '');
+
+    // 生存背包永远排在最前（快捷栏+主背包、护甲），创造背包放最后**且默认折叠**。
+    // 主背包在不同模式下的语义不一样，标题跟着模式走，免得看的人误会。
+    var mainTitle = creative ? '创造快捷栏（主背包）' : '快捷栏与主背包';
+    var html = invSection(mainTitle, d.main) + invSection('装备栏', d.armor);
+
+    // 创造背包：用 <details> 做成默认收起的一块，点标题才展开。
+    // 折叠状态下标题栏仍然显示物品数量，不用展开也能一眼看出有没有东西。
+    var cs = d.creative;
+    if(cs && cs.slots && cs.slots.length){
+      var counted = cs.slots.length + ' 种物品 / ' + cs.slotsCount + ' 格';
+      html += '<details class=""invFold"">' +
+        '<summary>创造背包 <span class=""foldMeta"">' + counted + '</span></summary>' +
+        '<div class=""foldBody"">' + invSection('', cs, true) + '</div>' +
+      '</details>';
+    } else {
+      html += '<details class=""invFold foldEmpty"">' +
+        '<summary>创造背包 <span class=""foldMeta"">空</span></summary>' +
+        '<div class=""foldBody""><div style=""font-size:12px;color:var(--text-dim);padding:8px 0"">' +
+        '（无内容 —— 该玩家当前不在创造模式，或创造背包是空的）</div></div>' +
+      '</details>';
+    }
+
+    $('invBody').innerHTML = html;
     $('invCard').scrollIntoView({ behavior:'smooth', block:'nearest' });
   }).catch(function(e){ btn.disabled = false; toast(e.message); });
 }
 function hasSlots(inv){ return inv && inv.slots && inv.slots.length > 0; }
-function invSection(title, inv){
-  if(!inv || !inv.slots || !inv.slots.length)
+// bare=true 时不再套一层标题栏（折叠区自带 summary），只出格子网格。
+function invSection(title, inv, bare){
+  if(!inv || !inv.slots || !inv.slots.length){
+    if(bare) return '<div style=""font-size:12px;color:var(--text-dim);padding:8px 0"">空</div>';
     return '<div style=""margin-bottom:14px""><div style=""font-size:12px;color:var(--text-dim);margin-bottom:8px"">' +
            esc(title) + ' · 空</div></div>';
+  }
 
-  var html = '<div style=""margin-bottom:16px"">' +
+  var head = bare ? '' :
     '<div style=""font-size:12px;color:var(--text-dim);margin-bottom:8px"">' +
-    esc(title) + ' · ' + inv.slots.length + ' 种物品 / ' + inv.slotsCount + ' 格</div><div class=""inv"">';
+    esc(title) + ' · ' + inv.slots.length + ' 种物品 / ' + inv.slotsCount + ' 格</div>';
+
+  var html = '<div style=""margin-bottom:16px"">' + head + '<div class=""inv"">';
   for(var i=0;i<inv.slots.length;i++){
     var s = inv.slots[i];
     var initial = (s.name || '?').charAt(0);
@@ -747,11 +1003,244 @@ function runCommand(){
     .catch(function(e){ appendLocal('error', e.message); });
 }
 
-/* ---------------- 事件绑定 ---------------- */
+/* ---------------- 存档目录浏览 ---------------- */
+var FILE_PATH = '';
+
+function loadFiles(path){
+  FILE_PATH = path || '';
+  api('/api/files?path=' + encodeURIComponent(FILE_PATH)).then(function(d){
+    if(!d.success){ $('fileList').innerHTML = '<div class=""empty"">' + esc(d.message || '读取失败') + '</div>'; return; }
+    renderCrumb(d.path, d.parent);
+    var list = d.entries || [];
+    if(!list.length){ $('fileList').innerHTML = '<div class=""empty"">这个目录是空的</div>'; return; }
+
+    var rows = '';
+    for(var i=0;i<list.length;i++){
+      var e = list[i];
+      var esc_attr = esc(e.path);
+      var nameCell = e.dir
+        ? '<span class=""nm dir"" data-open=""' + esc_attr + '"">' + esc(e.name) + '/</span>'
+        : '<span class=""nm"" title=""' + esc_attr + '"">' + esc(e.name) + '</span>';
+      var actionCell = '';
+      if(!e.dir && e.previewable)
+        actionCell = '<button class=""btn"" data-view-file=""' + esc_attr + '"">查看</button>';
+      rows += '<div class=""frow"">' +
+        nameCell +
+        '<span class=""kd"">' + esc(e.kind || '') + '</span>' +
+        '<span class=""sz"">' + (e.sizeText || (e.size == null ? '—' : e.size)) + '</span>' +
+        '<span class=""tm"">' + (e.modified || '—') + '</span>' +
+        actionCell +
+      '</div>';
+    }
+    var note = d.truncated ? '<div class=""hint"">目录内容过多，只显示前 400 项</div>' : '';
+    $('fileList').innerHTML = note + '<div class=""filelist"">' + rows + '</div>';
+  }).catch(function(e){ $('fileList').innerHTML = '<div class=""empty"">' + esc(e.message) + '</div>'; });
+}
+
+function renderCrumb(path, parent){
+  var root = '<a data-open="""">数据目录</a>';
+  if(!path){ $('filePath').innerHTML = root; return; }
+  var parts = path.split('/');
+  var acc = '';
+  var chain = [];
+  for(var i=0;i<parts.length;i++){
+    acc = acc ? acc + '/' + parts[i] : parts[i];
+    chain.push('<a data-open=""' + esc(acc) + '"">' + esc(parts[i]) + '</a>');
+  }
+  $('filePath').innerHTML = root + ' / ' + chain.join(' / ');
+}
+
+document.addEventListener('click', function(ev){
+  var opener = ev.target.closest ? ev.target.closest('[data-open]') : null;
+  if(opener){ loadFiles(opener.getAttribute('data-open')); return; }
+
+  var viewer = ev.target.closest ? ev.target.closest('button[data-view-file]') : null;
+  if(viewer){ openFile(viewer.getAttribute('data-view-file'), viewer); return; }
+});
+
+function openFile(path, btn){
+  btn.disabled = true;
+  api('/api/file?path=' + encodeURIComponent(path)).then(function(d){
+    btn.disabled = false;
+    if(!d.success){ toast(d.message || '读取失败'); return; }
+    $('fileViewCard').style.display = 'block';
+    $('fileViewName').textContent = d.name;
+    $('fileViewMeta').textContent = d.path + '　·　' + fmtSize(d.size) + '　·　最后修改 ' + d.modified;
+    $('fileViewBody').textContent = d.content;
+    $('fileViewCard').scrollIntoView({ behavior:'smooth', block:'nearest' });
+  }).catch(function(e){ btn.disabled = false; toast(e.message); });
+}
+
+function fmtSize(bytes){
+  if(bytes == null) return '—';
+  if(bytes < 1024) return bytes + ' B';
+  if(bytes < 1048576) return (bytes/1024).toFixed(1) + ' KB';
+  return (bytes/1048576).toFixed(2) + ' MB';
+}
+
+/* ---------------- 设置 ---------------- */
+function loadSettings(){
+  api('/api/settings').then(function(d){
+    if(!d.success) throw new Error(d.message || '读取失败');
+    $('setTitle').value = d.title || '';
+    $('setHost').value = d.bindHost || '';
+    $('setPort').value = d.port || '';
+    $('setSession').value = d.sessionMinutes;
+    $('setLogLines').value = d.logBufferLines;
+    $('setMaxFail').value = d.maxLoginFailures;
+    $('setLockout').value = d.lockoutSeconds;
+    $('setTimeout').value = d.requestTimeoutSeconds;
+    $('setSse').checked = !!d.useServerSentEvents;
+    $('setLogActions').checked = !!d.logActions;
+    $('setAllowed').value = d.allowedCommandPrefixes || '';
+    $('setDenied').value = d.deniedCommandPrefixes || '';
+
+    var status = '当前监听 ' + (d.running ? ('端口 ' + d.actualPort) : '未启动');
+    if(d.hasPassword) status += '　·　口令：' + (d.passwordHashed ? '哈希' : '明文');
+    else status += '　·　⚠ 未设口令';
+    $('setStatus').textContent = status;
+  }).catch(function(e){ toast(e.message); });
+}
+
+function saveSettings(){
+  var payload = {
+    title: $('setTitle').value,
+    bindHost: $('setHost').value,
+    port: parseInt($('setPort').value, 10) || 0,
+    sessionMinutes: parseInt($('setSession').value, 10) || 0,
+    logBufferLines: parseInt($('setLogLines').value, 10) || 0,
+    maxLoginFailures: parseInt($('setMaxFail').value, 10) || 0,
+    lockoutSeconds: parseInt($('setLockout').value, 10) || 0,
+    requestTimeoutSeconds: parseInt($('setTimeout').value, 10) || 0,
+    useServerSentEvents: $('setSse').checked,
+    logActions: $('setLogActions').checked,
+    allowedCommandPrefixes: $('setAllowed').value,
+    deniedCommandPrefixes: $('setDenied').value
+  };
+  api('/api/settings', { method:'POST', body: JSON.stringify(payload) }).then(function(d){
+    toast(d.message || '已保存');
+    loadSettings();
+  }).catch(function(e){ toast(e.message); });
+}
+
+function reloadSettings(){
+  api('/api/reload', { method:'POST', body: '{}' }).then(function(d){
+    toast(d.message || '已重载');
+    loadSettings();
+  }).catch(function(e){ toast(e.message); });
+}
+
+function changePassword(){
+  var oldPw = $('pwOld').value;
+  var newPw = $('pwNew').value;
+  if(!newPw){ toast('请填写新口令'); return; }
+  if(!confirm('确定要修改登录口令吗？改完所有登录都会失效，需要用新口令重新登录。')) return;
+
+  api('/api/settings/password', { method:'POST', body: JSON.stringify({
+    oldPassword: oldPw, newPassword: newPw, hash: $('pwHash').checked
+  }) }).then(function(d){
+    toast(d.message || '口令已更新');
+    $('pwOld').value = ''; $('pwNew').value = '';
+    // 口令已变，旧会话失效，直接回登录页
+    setTimeout(logoutLocal, 1200);
+  }).catch(function(e){ toast(e.message); });
+}
+
+/* ---------------- 封禁名单 ---------------- */
+var BAN_TAB = 'user';   // 'user' 账号名单 / 'ip' IP 名单
+
+// 页面构建版本。服务端每次返回的 ETag 都变，正常情况下浏览器不会缓存；
+// 若仍看到旧界面（比如被中间代理缓存），点顶部「强制刷新」——
+// 它会给地址加一个时间戳参数并走 location.replace，等价于跳过缓存重新拉。
+var PAGE_BUILD = '20261005-2';
+
+function banTipText(){
+  if(BAN_TAB === 'ip')
+    return '⚠ IP 封禁针对【网络出口地址】。本服若经 FRP 转发，服务端看到的地址是代理机的、' +
+           '全体玩家共用 —— 封它等于封掉所有人。除非你确认某个 IP 就是攻击者本人的真实公网 IP，' +
+           '否则请用「账号封禁」。';
+  return '账号封禁认的是【社区账号 id】，与玩家从哪个 IP 连进来无关，是 FRP 环境下最可靠的封禁方式。';
+}
+
+function loadBans(tab){
+  BAN_TAB = tab || BAN_TAB;
+  var tabBtns = document.querySelectorAll('#banTabs button');
+  for(var i=0;i<tabBtns.length;i++)
+    tabBtns[i].className = tabBtns[i].getAttribute('data-bantab') === BAN_TAB ? 'on' : '';
+
+  $('banTip').textContent = banTipText();
+  $('banBody').innerHTML = '<div class=""empty"">读取中…</div>';
+
+  // ⚠ 不能走 /api/execute：默认配置里 `ban` 在**禁止清单**里（DeniedCommandPrefixes 含 stop 与 ban），
+  //   终端执行会被拦。名单读取改走玩家动作通道（ApplyPlayerAction 里直接借核心命令执行，
+  //   不受网页终端白名单约束，因为它是「动作」而不是「用户手打的命令」）。
+  var probe = document.querySelector('#playerTable button[data-g]');
+  var guid = probe ? probe.getAttribute('data-g') : '00000000-0000-0000-0000-000000000000';
+  var action = BAN_TAB === 'ip' ? 'baniplist' : 'banlist';
+
+  api('/api/players/action', { method:'POST', body: JSON.stringify({ guid: guid, action: action }) })
+    .then(function(d){
+      if(!d.success){ $('banBody').innerHTML = '<div class=""empty"">' + esc(d.message || '读取失败') + '</div>'; return; }
+      // 这条通道把命令回显并进了 message（见 WebPanelApi.ExecuteViaCommand），原样显示即可
+      var out = (d.message || '').trim();
+      $('banBody').innerHTML = out
+        ? '<pre class=""filepreview mono"">' + esc(out) + '</pre>'
+        : '<div class=""empty"">名单为空</div>';
+    })
+    .catch(function(e){
+      $('banBody').innerHTML = '<div class=""empty"">' + esc(e.message) + '</div>';
+    });
+}
+
+function addIpManually(){
+  var input = prompt(
+    '要封禁哪个 IP？（不要带端口）\n\n' +
+    '⚠ 本服若经 FRP 转发，服务端看到的地址是代理机的、全体玩家共用；' +
+    '请务必确认你填的是攻击者的【真实公网 IP】，否则会把整个服务器的人挡在门外。', '');
+  if(input === null) return;
+  input = input.trim();
+  if(!input){ toast('没有填 IP'); return; }
+  if(!confirm('确认封禁 IP「' + input + '」？\n\n该地址上的在线玩家会被立即断开。')) return;
+
+  // 借用任意在线玩家作为 guid 载体（banip 只用得到 ip，不依赖具体玩家）
+  var online = document.querySelector('#playerTable button[data-g]');
+  var guid = online ? online.getAttribute('data-g') : '00000000-0000-0000-0000-000000000000';
+  api('/api/players/action', { method:'POST', body: JSON.stringify({ guid: guid, action:'banip', ip: input }) })
+    .then(function(d){ toast(d.message || ('已封禁 ' + input)); loadBans('ip'); })
+    .catch(function(e){ toast(e.message); });
+}
+
+/* 强制刷新：给地址加一个时间戳参数再 replace，绕过一切缓存重新拉页面。
+   location.replace 不会在历史里留记录，按返回键不会掉进刷新循环。 */
+function hardReload(){
+  try{
+    var url = new URL(location.href);
+    url.searchParams.set('_v', Date.now());
+    location.replace(url.toString());
+  }catch(e){
+    // 极老的浏览器没有 URL API，退回字符串拼接
+    var sep = location.href.indexOf('?') >= 0 ? '&' : '?';
+    location.replace(location.href + sep + '_v=' + Date.now());
+  }
+}
+
+
 $('loginBtn').onclick = doLogin;
 $('pw').addEventListener('keydown', function(e){ if(e.key === 'Enter') doLogin(); });
 $('logout').onclick = function(){ api('/api/logout').catch(function(){}); logoutLocal(); };
 $('invClose').onclick = function(){ $('invCard').style.display = 'none'; };
+$('fileViewClose').onclick = function(){ $('fileViewCard').style.display = 'none'; };
+$('banRefresh').onclick = function(){ loadBans(); };
+$('banAddIp').onclick = addIpManually;
+$('hardReload').onclick = hardReload;
+$('buildTag').textContent = '构建 ' + PAGE_BUILD;
+var banTabBtns = document.querySelectorAll('#banTabs button');
+for(var bt=0;bt<banTabBtns.length;bt++){
+  banTabBtns[bt].onclick = function(){ loadBans(this.getAttribute('data-bantab')); };
+}
+$('setSave').onclick = saveSettings;
+$('setReload').onclick = reloadSettings;
+$('pwSave').onclick = changePassword;
 $('run').onclick = runCommand;
 $('cmd').addEventListener('keydown', function(e){ if(e.key === 'Enter') runCommand(); });
 $('logClear').onclick = function(){ LOG_LINES = []; renderLogs(); };

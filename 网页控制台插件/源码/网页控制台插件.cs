@@ -569,6 +569,45 @@ namespace ScWebPanel
                 return;
             }
 
+            // ---- 存档目录浏览 ----
+            if (path == "/api/files")
+            {
+                // 纯磁盘只读，不碰游戏对象，直接在 HTTP 线程答
+                WriteJson(response, 200, WebPanelFiles.ListDirectory(request.QueryString["path"]));
+                return;
+            }
+
+            if (path == "/api/file")
+            {
+                WriteJson(response, 200, WebPanelFiles.ReadFile(request.QueryString["path"]));
+                return;
+            }
+
+            // ---- 面板设置 ----
+            if (path == "/api/settings" && request.HttpMethod == "GET")
+            {
+                WriteJson(response, 200, WebPanelSettings.ToJson(settings, CurrentPort, _listener != null));
+                return;
+            }
+
+            if (path == "/api/settings" && request.HttpMethod == "POST")
+            {
+                HandleSettingsSave(context, settings, session, remoteIp);
+                return;
+            }
+
+            if (path == "/api/settings/password" && request.HttpMethod == "POST")
+            {
+                HandlePasswordChange(context, settings, session, remoteIp);
+                return;
+            }
+
+            if (path == "/api/reload" && request.HttpMethod == "POST")
+            {
+                HandleReload(context, session, remoteIp);
+                return;
+            }
+
             WriteJson(response, 404, JsonError("接口不存在：" + path));
         }
 
@@ -1000,6 +1039,8 @@ namespace ScWebPanel
             string action = path.EndsWith("/kick", StringComparison.Ordinal)
                 ? "kick"
                 : WebPanelJson.ParseString(body, "action");
+            // 只有 banip / unbanip 用得到：管理员在面板上显式输入的 IP。
+            string ipArgument = WebPanelJson.ParseString(body, "ip");
 
             if (!WebPanelActionPolicy.IsAllowed(action, settings, out string reason))
             {
@@ -1013,7 +1054,7 @@ namespace ScWebPanel
 
             bool ok = RunOnMainThread(() =>
             {
-                message = WebPanelApi.ApplyPlayerAction(guid, action, out string actionError);
+                message = WebPanelApi.ApplyPlayerAction(guid, action, ipArgument, out string actionError);
                 error = actionError;
                 return null;
             }, out _, out string queueError, timeoutMs);
@@ -1054,6 +1095,219 @@ namespace ScWebPanel
             {
                 lock (_recentActions) return _recentActions.ToArray();
             }
+        }
+
+        // ==========================================
+        // 面板设置 / 热重载
+        // ==========================================
+
+        /// <summary>当前实际监听的端口（没起来时为 0）。设置页显示它就是"配置值 vs 生效值"的差别。</summary>
+        private int CurrentPort
+        {
+            get
+            {
+                var listener = _listener;
+                if (listener == null) return 0;
+                // HttpListener 不直接给端口，从前缀里抠；前缀形如 http://host:port/
+                foreach (string prefix in listener.Prefixes)
+                {
+                    var uri = new Uri(prefix);
+                    return uri.Port;
+                }
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// 保存设置：把页面改的字段写进配置并落盘，然后**热重载**让大部分改动立即生效。
+        /// 端口/绑定地址这类会换监听前缀的改动，重载时会重启监听。
+        /// 口令不在这里改（走 /api/settings/password）。
+        /// </summary>
+        private void HandleSettingsSave(HttpListenerContext context, WebPanelConfig settings,
+            WebPanelSession session, string remoteIp)
+        {
+            string body = ReadBody(context.Request);
+            if (!WebPanelSettings.TryApply(settings, body, out string error))
+            {
+                WriteJson(context.Response, 400, JsonError(error));
+                return;
+            }
+
+            WebPanelConfigStore.Save(ConfigFilePath, settings);
+
+            if (settings.LogActions)
+            {
+                Remember($"{remoteIp} 修改了面板设置");
+                Log.Information($"[网页控制台] {remoteIp} 修改了面板设置（端口 {settings.Port}）");
+            }
+
+            // 应用改动：换端口/绑定地址要重启监听，其它项大多已"就地生效"（它们每次请求现读 settings）。
+            bool reloaded = ReloadListener(settings, out string reloadError);
+
+            var sb = new StringBuilder(256);
+            sb.Append("{\"success\":true");
+            sb.Append(",\"reloaded\":").Append(reloaded ? "true" : "false");
+            sb.Append(",\"message\":").Append(WebPanelJson.Quote(
+                reloaded
+                    ? "设置已保存并生效"
+                    : "设置已保存；但监听器重启失败，端口/地址要等下次重启服务端才变（" + (reloadError ?? "未知原因") + "）"));
+            sb.Append('}');
+            WriteJson(context.Response, 200, sb.ToString());
+        }
+
+        /// <summary>
+        /// 改口令。**必须带旧口令**（见 WebPanelSettings.TryChangePassword 的说明）。
+        /// 改完会让所有现有会话失效（重新登录），避免旧会话继续用。
+        /// </summary>
+        private void HandlePasswordChange(HttpListenerContext context, WebPanelConfig settings,
+            WebPanelSession session, string remoteIp)
+        {
+            string body = ReadBody(context.Request);
+            string oldPassword = WebPanelJson.ParseString(body, "oldPassword") ?? "";
+            string newPassword = WebPanelJson.ParseString(body, "newPassword") ?? "";
+            string hashRaw = WebPanelJson.ParseString(body, "hash");
+            bool hash = hashRaw != null && hashRaw.Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
+
+            if (!WebPanelSettings.TryChangePassword(settings, oldPassword, newPassword, hash, out string error))
+            {
+                if (settings.LogActions)
+                {
+                    Log.Warning($"[网页控制台] {remoteIp} 改口令失败：{error}");
+                }
+                WriteJson(context.Response, 400, JsonError(error));
+                return;
+            }
+
+            WebPanelConfigStore.Save(ConfigFilePath, settings);
+
+            // 口令变了 = 旧会话的凭证不再可信；全部清掉，强制重新登录。
+            lock (_sessions) _sessions.Clear();
+
+            if (settings.LogActions)
+            {
+                Log.Information($"[网页控制台] {remoteIp} 修改了登录口令，所有会话已失效");
+            }
+
+            WriteJson(context.Response, 200,
+                "{\"success\":true,\"message\":" +
+                WebPanelJson.Quote("口令已更新，所有登录已失效，请用新口令重新登录") + "}");
+        }
+
+        /// <summary>手动重载：重新读配置并重启监听（设置页的"重载"按钮）。</summary>
+        private void HandleReload(HttpListenerContext context, WebPanelSession session, string remoteIp)
+        {
+            var fresh = WebPanelConfigStore.Load(ConfigFilePath);
+
+            // 用新读出来的值覆盖运行中的设置对象（保持同一个实例，别处持有它的引用不会失效）
+            var current = Settings;
+            if (current != null && fresh != null)
+            {
+                current.Enabled = fresh.Enabled;
+                current.BindHost = fresh.BindHost;
+                current.Port = fresh.Port;
+                current.Password = fresh.Password;
+                current.SessionMinutes = fresh.SessionMinutes;
+                current.MaxLoginFailures = fresh.MaxLoginFailures;
+                current.LockoutSeconds = fresh.LockoutSeconds;
+                current.AllowedCommandPrefixes = fresh.AllowedCommandPrefixes;
+                current.DeniedCommandPrefixes = fresh.DeniedCommandPrefixes;
+                current.LogBufferLines = fresh.LogBufferLines;
+                current.UseServerSentEvents = fresh.UseServerSentEvents;
+                current.RequestTimeoutSeconds = fresh.RequestTimeoutSeconds;
+                current.LogActions = fresh.LogActions;
+                current.Title = fresh.Title;
+                current.Clamp();
+            }
+
+            bool reloaded = ReloadListener(current, out string reloadError);
+
+            if (current != null && current.LogActions)
+            {
+                Log.Information($"[网页控制台] {remoteIp} 重载面板（监听重启：{(reloaded ? "成功" : "失败")}）");
+            }
+
+            WriteJson(context.Response, 200,
+                "{\"success\":true,\"reloaded\":" + (reloaded ? "true" : "false") +
+                ",\"message\":" + WebPanelJson.Quote(
+                    reloaded ? "已重载配置并重启监听" : "配置已重载，但监听重启失败：" + (reloadError ?? "未知原因")) + "}");
+        }
+
+        /// <summary>
+        /// 重启 HTTP 监听（不动日志捕获 / SSE 泵 / 会话表里已登录的人）。
+        /// 只有监听前缀（host:port）变了才真重启；否则视为无需动作。
+        /// ⚠ 这一步**不能**顺序错误：必须先起新的、成功后再停旧的；否则中途失败会
+        /// 变成"旧的停了、新的没起"，面板直接失联 —— 那只能靠重启服务端补救。
+        /// </summary>
+        private bool ReloadListener(WebPanelConfig settings, out string error)
+        {
+            error = null;
+            if (settings == null) return false;
+            if (!settings.Enabled) return false;
+
+            string desired = BuildPrefix(settings.BindHost, settings.Port);
+
+            // 已经在监听同一个前缀 → 无需重启
+            var existing = _listener;
+            if (existing != null)
+            {
+                bool same = false;
+                foreach (string prefix in existing.Prefixes)
+                {
+                    if (string.Equals(prefix, desired, StringComparison.OrdinalIgnoreCase)) { same = true; break; }
+                }
+                if (same)
+                {
+                    return true;
+                }
+            }
+
+            // 起新的（失败就保持旧的继续服务）
+            HttpListener fresh;
+            try
+            {
+                fresh = new HttpListener();
+                fresh.Prefixes.Add(desired);
+                fresh.Start();
+            }
+            catch (HttpListenerException ex)
+            {
+                error = $"新监听 {desired} 起不来（错误码 {ex.ErrorCode}）：{ex.Message}" +
+                        "；可能端口被占或缺少 URL ACL，已保持原监听不变";
+                return false;
+            }
+            catch (Exception ex)
+            {
+                error = $"新监听初始化异常：{ex.Message}；已保持原监听不变";
+                return false;
+            }
+
+            // 新的起来了 → 换掉旧的
+            var old = _listener;
+            _listener = fresh;
+
+            if (old != null)
+            {
+                try
+                {
+                    old.Stop();
+                    old.Close();
+                }
+                catch
+                {
+                }
+            }
+
+            // 监听线程：让它自然跑到下一个循环会发现 _listener 变了。
+            // 为简单起见，旧线程在一次 GetContext 抛异常/返回后会退出；这里再起一条新线程兜住。
+            if (_listenThread == null || !_listenThread.IsAlive)
+            {
+                _stopping = false;
+                _listenThread = new Thread(ListenLoop) { IsBackground = true, Name = "WebPanelListener" };
+                _listenThread.Start();
+            }
+
+            Log.Information("[网页控制台] 监听已切换到 " + desired);
+            return true;
         }
 
         // ==========================================
@@ -1117,8 +1371,14 @@ namespace ScWebPanel
                 response.StatusCode = status;
                 response.ContentType = contentType;
                 response.ContentLength64 = payload.Length;
-                // 面板是管理界面，绝不能被任何中间层缓存
-                response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
+
+                // 面板是管理界面，绝不能被任何中间层或浏览器缓存。
+                // 只写 Cache-Control 还不够：老浏览器认 Pragma，部分代理认 Expires；
+                // 再加一个每次都变的 ETag，逼浏览器每次都拿新的（等价于自动强刷）。
+                response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0";
+                response.Headers["Pragma"] = "no-cache";
+                response.Headers["Expires"] = "0";
+                response.Headers["ETag"] = "\"" + DateTime.UtcNow.Ticks.ToString(CultureInfo.InvariantCulture) + "\"";
                 response.Headers["X-Content-Type-Options"] = "nosniff";
                 response.OutputStream.Write(payload, 0, payload.Length);
             }

@@ -106,11 +106,23 @@ namespace ScWebPanel
             {
                 { "kick",       "踢出服务器" },
                 { "heal",       "回满生命" },
+                { "fix",        "修复生存状态（血量/食物/睡眠/潮湿/体温）" },
                 { "kill",       "击杀该玩家" },
                 { "gamemode",   "切换创造/生存" },
                 { "clear",      "清空背包" },
                 { "godmode",    "开关无敌" },
                 { "respawn",    "送回重生点" },
+                { "ban",        "按社区账号封禁" },
+                { "unban",      "解除账号封禁" },
+                { "banlist",    "查看封禁名单" },
+                { "banip",      "封禁一个指定 IP（需手填 IP）" },
+                { "unbanip",    "解除一个指定 IP 的封禁" },
+                { "banipuser",  "记录该账号的 IP 并封禁（跟账号走）" },
+                { "unbanipuser","解除该账号的 IP 记录" },
+                { "baniplist",  "查看 IP 封禁名单" },
+                { "day",        "把时间设为白天" },
+                { "night",      "把时间设为夜晚" },
+                { "tell",       "私聊提醒该玩家" },
             };
 
         public static bool IsAllowed(string action, WebPanelConfig settings, out string reason)
@@ -128,6 +140,14 @@ namespace ScWebPanel
                 reason = "不支持的动作：" + action;
                 return false;
             }
+
+            // ⚠ 封禁相关的安全边界：
+            //   * `ban` / `unban` 只认 CommunityAccountId，跟网络路径无关。
+            //   * `banip` 封的是**管理员手填的 IP**，面板绝不代填"该玩家当前连接地址"——
+            //     FRP 转发下那个地址是代理机的，全服玩家共用，一键封 = 封全服。
+            //   * `banipuser` 交给核心按账号现场关联 IP（/ban ip user <id>），
+            //     这是 FRP 环境下唯一"不用管理员猜 IP"的相对安全路径。
+            // 以上三条都在 WebPanelApi.ApplyPlayerAction 里实现，这里只做动作名白名单。
 
             // 踢人不需要额外审批（它就是"管理玩家"的核心动作），但要在日志里留痕，
             // 所以这里只挡"库里没有的动作"，真正的动作执行在 WebPanelApi.ApplyPlayerAction。
