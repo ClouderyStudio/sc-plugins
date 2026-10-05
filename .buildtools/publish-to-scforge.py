@@ -145,22 +145,38 @@ class SCForgeHttpError(Exception):
         self.detail = detail
 
 
-def download(url, dest):
-    """下载到 dest。优先走加速前缀；失败退回直连（加速站偶发抽风，不该让发版卡死）。"""
+def download(url, dest, attempts=5, delay=10):
+    """下载到 dest。优先走加速前缀；失败退回直连（加速站偶发抽风，不该让发版卡死）。
+
+    ⚠️ 带重试：打 tag 会同时触发 CI 的 publish-scforge 与本机的 Release 创建，
+    两条流程是**并行**的 —— CI 常常跑得比 Release 附件上传更快，此时取附件会拿到 404。
+    这种情况等几秒就好了，不能当硬失败（踩过：v1.0.2 的 CI 就是这样红的）。
+    """
     candidates = []
     if PROXY_PREFIX and url.startswith("https://github.com/"):
         candidates.append(PROXY_PREFIX + url)
     candidates.append(url)
+
+    import time
     last = None
-    for u in candidates:
-        try:
-            req = urllib.request.Request(u, headers={"User-Agent": "sc-plugins-publisher"})
-            with urllib.request.urlopen(req) as resp, open(dest, "wb") as out:
-                out.write(resp.read())
-            return u
-        except Exception as exc:  # noqa: BLE001 - 逐个候选尝试，最后统一报错
-            last = exc
-    die("下载失败：%s（最后一次错误：%s）" % (url, last))
+    for attempt in range(1, attempts + 1):
+        for u in candidates:
+            try:
+                req = urllib.request.Request(u, headers={"User-Agent": "sc-plugins-publisher"})
+                with urllib.request.urlopen(req) as resp, open(dest, "wb") as out:
+                    out.write(resp.read())
+                if attempt > 1:
+                    log("      （第 %d 次尝试成功）" % attempt)
+                return u
+            except Exception as exc:  # noqa: BLE001 - 逐个候选尝试，最后统一报错
+                last = exc
+        if attempt < attempts:
+            log("      附件暂不可取（%s），%d 秒后重试 %d/%d"
+                % (last, delay, attempt, attempts - 1))
+            time.sleep(delay)
+    die("下载失败：%s（重试 %d 次仍失败，最后一次错误：%s）\n"
+        "  CI 里出现这个通常是因为 Release 附件还没传完；等一会儿重跑该作业即可。"
+        % (url, attempts, last))
 
 
 # ---------------------------------------------------------------- 清单读取
