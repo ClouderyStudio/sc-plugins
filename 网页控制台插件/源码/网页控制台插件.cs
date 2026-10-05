@@ -608,6 +608,15 @@ namespace ScWebPanel
                 return;
             }
 
+            // 封 IP 前先看这个地址上挂了几个人：>1 就是家庭/校园网，封了会连坐。
+            if (path == "/api/connections")
+            {
+                bool force = ParseLong(request.QueryString["refresh"], 0) == 1;
+                string payload = WebPanelConnections.Build(_logSink.SnapshotTexts(), force);
+                WriteJson(response, 200, payload);
+                return;
+            }
+
             WriteJson(response, 404, JsonError("接口不存在：" + path));
         }
 

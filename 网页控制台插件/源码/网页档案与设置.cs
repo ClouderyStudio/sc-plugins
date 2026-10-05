@@ -362,8 +362,12 @@ namespace ScWebPanel
         /// <summary>
         /// 把外部传入的相对路径解析成根目录内的绝对路径。`..` 越界直接拒绝。
         /// 返回 false 时 <paramref name="error"/> 给出原因（会直接回给前端）。
+        ///
+        /// ⚠ 可见性为 internal 是给同程序集内的 <see cref="WebPanelConnections"/> 用的
+        /// （它要从根目录读 Bugs/Game.log，走同一条越界校验，不另写一套）。
+        /// 对外暴露的仍然是 <see cref="ListDirectory"/> / <see cref="ReadFile"/>，别把本方法直接接到 HTTP 上。
         /// </summary>
-        private static bool TryResolveInsideRoot(string relativePath, out string fullPath, out string error)
+        internal static bool TryResolveInsideRoot(string relativePath, out string fullPath, out string error)
         {
             fullPath = null;
             error = null;
@@ -526,6 +530,258 @@ namespace ScWebPanel
         private static string Error(string message)
         {
             return "{\"success\":false,\"message\":" + WebPanelJson.Quote(message ?? "未知错误") + "}";
+        }
+    }
+
+    /// <summary>
+    /// IP 与账号的关联统计。**给"封 IP 前先看看会不会连坐"用的。**
+    ///
+    /// 为什么需要它：核心的 `/ban ip add` 是**按网络出口地址**封的。同一个 IP 后面可能坐着
+    /// 一家人 / 一个宿舍 / 一个网吧 —— 直接封就是把这些人一起挡在门外。
+    /// 所以封之前必须先回答一个问题：**这个 IP 关联了几个不同的账号？**
+    ///   1 个  = 独占，可以放心封；
+    ///   &gt;1 个 = 共用，封它会连坐，要慎重（或改封账号）。
+    ///
+    /// 数据从哪来：核心每次接受连接都会写一行
+    /// <c>[连接请求] 接受客户端 &lt;ip&gt;:&lt;port&gt; 连接: ID=n, 昵称=&lt;名&gt;, GUID=&lt;guid&gt;</c>
+    /// 所以扫日志就能把「IP → 见过哪些 GUID」这条关系重建出来。
+    ///
+    /// 两个来源合并：
+    ///   - 内存里的日志缓冲（<see cref="WebPanelLogSink"/>，本次启动以来的）
+    ///   - 磁盘上的 <c>Bugs/Game.log</c> **尾部若干 MB**（跨重启的历史）
+    /// ⚠️ 磁盘日志可能上百 MB，**绝不能整个读进内存**，这里只倒着读尾部一段（见 <see cref="TailLines"/>）。
+    /// </summary>
+    public static class WebPanelConnections
+    {
+        /// <summary>磁盘日志最多从尾部读多少字节。够覆盖最近几千次连接，又不至于把服务器读卡。</summary>
+        private const long TailBytes = 8L * 1024 * 1024;
+
+        /// <summary>结果缓存时长：这段时间内重复请求直接返回上次的结果，避免每次都去扫日志。</summary>
+        private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
+
+        private static readonly object CacheLock = new object();
+        private static string _cachedJson;
+        private static DateTime _cachedAtUtc = DateTime.MinValue;
+
+        /// <summary>日志文件相对数据根目录的位置（核心固定写这里）。</summary>
+        private const string LogRelativePath = "Bugs/Game.log";
+
+        /// <summary>
+        /// 汇总「IP → 关联的账号」列表，返回 JSON 给前端。
+        /// 结构：{ success, scanned, ips: [{ ip, guids, names, count, shared }], note }
+        /// </summary>
+        /// <param name="memoryLogs">
+        /// 本次启动以来的内存日志（来自 <see cref="WebPanelLogSink.SnapshotTexts"/>）。
+        /// 传 null 就只用磁盘日志 —— 由调用方给，别在这里挂全局单例。
+        /// </param>
+        public static string Build(string[] memoryLogs, bool forceRefresh)
+        {
+            lock (CacheLock)
+            {
+                if (!forceRefresh && _cachedJson != null &&
+                    DateTime.UtcNow - _cachedAtUtc < CacheTtl)
+                {
+                    return _cachedJson;
+                }
+            }
+
+            try
+            {
+                // ip -> (guid 集合, 昵称集合)
+                var map = new Dictionary<string, IpRecord>(StringComparer.OrdinalIgnoreCase);
+                int scanned = 0;
+
+                // 来源 1：本次启动以来的内存日志
+                if (memoryLogs != null)
+                {
+                    foreach (string line in memoryLogs)
+                    {
+                        scanned++;
+                        ParseConnectionLine(line, map);
+                    }
+                }
+
+                // 来源 2：磁盘日志尾部（跨重启）
+                foreach (string line in TailLines(LogRelativePath, TailBytes))
+                {
+                    scanned++;
+                    ParseConnectionLine(line, map);
+                }
+
+                // 排序：关联账号多的排前面（那些正是"封了会连坐"的高危 IP）
+                var ordered = map.Values
+                    .OrderByDescending(r => r.Guids.Count)
+                    .ThenBy(r => r.Ip, StringComparer.Ordinal)
+                    .ToList();
+
+                var sb = new StringBuilder(8192);
+                sb.Append("{\"success\":true,\"scanned\":").Append(scanned);
+                sb.Append(",\"ipCount\":").Append(ordered.Count);
+                sb.Append(",\"sharedCount\":").Append(ordered.Count(r => r.Guids.Count > 1));
+                sb.Append(",\"ips\":[");
+                bool first = true;
+                foreach (var r in ordered)
+                {
+                    if (!first) sb.Append(',');
+                    first = false;
+                    sb.Append("{\"ip\":").Append(WebPanelJson.Quote(r.Ip));
+                    sb.Append(",\"count\":").Append(r.Guids.Count);
+                    // shared = 该 IP 后面不止一个账号 ⇒ 封它必然连坐
+                    sb.Append(",\"shared\":").Append(r.Guids.Count > 1 ? "true" : "false");
+                    AppendStringArray(sb, "guids", r.Guids);
+                    AppendStringArray(sb, "names", r.Names);
+                    sb.Append('}');
+                }
+                sb.Append("]}");
+
+                string json = sb.ToString();
+                lock (CacheLock)
+                {
+                    _cachedJson = json;
+                    _cachedAtUtc = DateTime.UtcNow;
+                }
+                return json;
+            }
+            catch (Exception ex)
+            {
+                return "{\"success\":false,\"message\":" + WebPanelJson.Quote("统计连接记录失败：" + ex.Message) + "}";
+            }
+        }
+
+        private sealed class IpRecord
+        {
+            public string Ip;
+            // 用集合去重：同一个人反复上线不该被算成多个账号
+            public readonly HashSet<string> Guids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            public readonly HashSet<string> Names = new HashSet<string>(StringComparer.Ordinal);
+        }
+
+        /// <summary>
+        /// 从一行日志里抠出 ip / GUID / 昵称。不是连接行就直接返回。
+        ///
+        /// 目标格式（核心原样输出，字段名可能随版本微调，所以解析写得宽松些）：
+        /// <c>[连接请求] 接受客户端 1.2.3.4:5678 连接: ID=1, 昵称=某人, GUID=xxxx-...</c>
+        /// </summary>
+        private static void ParseConnectionLine(string line, Dictionary<string, IpRecord> map)
+        {
+            if (string.IsNullOrEmpty(line)) return;
+            if (line.IndexOf("接受客户端", StringComparison.Ordinal) < 0) return;
+
+            string guid = ExtractField(line, "GUID=");
+            if (string.IsNullOrEmpty(guid)) return;
+
+            // ip 在 "接受客户端 " 之后、" 连接" 之前；其中带 :port，要切掉
+            int at = line.IndexOf("接受客户端 ", StringComparison.Ordinal);
+            if (at < 0) return;
+            int from = at + "接受客户端 ".Length;
+            int to = line.IndexOf(' ', from);
+            if (to <= from) return;
+
+            string hostPort = line.Substring(from, to - from).Trim();
+            string ip = StripPort(hostPort);
+            if (string.IsNullOrEmpty(ip)) return;
+
+            string name = ExtractField(line, "昵称=");
+
+            if (!map.TryGetValue(ip, out IpRecord rec))
+            {
+                rec = new IpRecord { Ip = ip };
+                map[ip] = rec;
+            }
+            rec.Guids.Add(guid);
+            if (!string.IsNullOrEmpty(name)) rec.Names.Add(name);
+        }
+
+        /// <summary>取 <c>key=</c> 之后到下一个逗号（或行尾）之间的值。</summary>
+        private static string ExtractField(string line, string key)
+        {
+            int at = line.IndexOf(key, StringComparison.Ordinal);
+            if (at < 0) return null;
+            int from = at + key.Length;
+            int to = line.IndexOf(',', from);
+            if (to < 0) to = line.Length;
+            return line.Substring(from, to - from).Trim();
+        }
+
+        /// <summary>
+        /// 去掉 <c>:端口</c>。IPv6 形如 <c>[::1]:8080</c> 或 <c>::1</c>，
+        /// 所以不能简单 Split(':') —— 只有出现方括号或"恰好一个冒号且后面全是数字"才切。
+        /// </summary>
+        private static string StripPort(string hostPort)
+        {
+            if (string.IsNullOrEmpty(hostPort)) return null;
+
+            // [v6]:port
+            if (hostPort.StartsWith("[", StringComparison.Ordinal))
+            {
+                int close = hostPort.IndexOf(']');
+                return close > 0 ? hostPort.Substring(1, close - 1) : hostPort.Trim('[', ']');
+            }
+
+            int firstColon = hostPort.IndexOf(':');
+            int lastColon = hostPort.LastIndexOf(':');
+            // 只有一个冒号 ⇒ 是 v4:port，切掉
+            if (firstColon >= 0 && firstColon == lastColon)
+            {
+                string portPart = hostPort.Substring(lastColon + 1);
+                bool allDigits = portPart.Length > 0;
+                foreach (char c in portPart)
+                {
+                    if (c < '0' || c > '9') { allDigits = false; break; }
+                }
+                return allDigits ? hostPort.Substring(0, lastColon) : hostPort;
+            }
+            // 多个冒号 ⇒ 裸 IPv6，原样返回
+            return hostPort;
+        }
+
+        /// <summary>
+        /// 从文件尾部倒着读，返回最后那些行（按文件顺序）。
+        ///
+        /// 为什么不整个读：正式服的 Game.log 能到几十上百 MB，一次性 ReadAllLines
+        /// 会在主线程附近造成明显卡顿和内存峰值。这里只读尾部 <paramref name="maxBytes"/> 字节，
+        /// 并且**丢弃第一行**（可能被从中间截断）。
+        /// </summary>
+        private static IEnumerable<string> TailLines(string relativePath, long maxBytes)
+        {
+            if (!WebPanelFiles.TryResolveInsideRoot(relativePath, out string full, out _))
+            {
+                yield break;
+            }
+            if (!File.Exists(full)) yield break;
+
+            var info = new FileInfo(full);
+            long start = Math.Max(0, info.Length - maxBytes);
+
+            using (var fs = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                fs.Seek(start, SeekOrigin.Begin);
+                using (var reader = new StreamReader(fs, Encoding.UTF8, true))
+                {
+                    bool first = true;
+                    string line;
+                    while ((line = reader.ReadLine()) != null)
+                    {
+                        // 第一行很可能是被截断的半行，丢掉
+                        if (first && start > 0) { first = false; continue; }
+                        first = false;
+                        yield return line;
+                    }
+                }
+            }
+        }
+
+        private static void AppendStringArray(StringBuilder sb, string name, HashSet<string> values)
+        {
+            sb.Append(",\"").Append(name).Append("\":[");
+            bool first = true;
+            foreach (string v in values)
+            {
+                if (!first) sb.Append(',');
+                first = false;
+                sb.Append(WebPanelJson.Quote(v));
+            }
+            sb.Append(']');
         }
     }
 }

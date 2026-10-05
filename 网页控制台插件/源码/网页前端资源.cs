@@ -714,6 +714,87 @@ function loadPlayers(){
   }).catch(function(e){ toast(e.message); });
 }
 
+// 封 IP 的完整确认流程。
+// 关键：先问服务端「这个地址上到底挂过几个账号」，再决定要不要封 ——
+// 1 个 = 独占，封了干净；>1 = 家庭/校园网/网吧，封了就一起连坐。
+function askBanIp(btn, guid, act){
+  var peer = btn.getAttribute('data-ip') || '';
+  btn.disabled = true;
+  api('/api/connections?refresh=1').then(function(d){
+    btn.disabled = false;
+    var rec = null;
+    if(d && d.success && d.ips){
+      for(var i=0;i<d.ips.length;i++){
+        if(d.ips[i].ip === peer){ rec = d.ips[i]; break; }
+      }
+    }
+    var shareHint = '';
+    if(rec){
+      var n = rec.count || (rec.guids ? rec.guids.length : 0);
+      var names = (rec.names || []).join('、');
+      if(n > 1){
+        shareHint = '\n\n⚠⚠ 这个地址在日志里关联了 ' + n + ' 个账号：' + names + '\n' +
+                    '多半是家庭/校园网/网吧等多人共用，封它会把这些人一起挡在门外。\n' +
+                    '建议改用「封禁账号」精确打击。';
+      }else{
+        shareHint = '\n\n✓ 这个地址在日志里只关联到 1 个账号（' + (names || '该玩家') + '），独占，封了不会连坐。';
+      }
+    }
+    var hint = peer
+      ? '\n\n该玩家当前的连接地址是 ' + peer + '。\n' +
+        '⚠ 请确认你填的是玩家【真实公网 IP】，而不是服务端看到的连接地址（可能是代理机）。'
+      : '\n\n（该玩家没有可读到的连接地址。）';
+    var input = prompt(
+      '要封禁哪个 IP？（可直接编辑下面预填的地址）\n' +
+      '只接受 IP，不要带端口。' + hint + shareHint, peer);
+    if(input === null) return;
+    input = input.trim();
+    if(!input){ toast('没有填 IP'); return; }
+    // 手填的值和刚才查过的不一样时，用最新的统计再确认一遍
+    if(input !== peer){
+      api('/api/connections?refresh=1').then(function(d2){
+        var r2 = null;
+        if(d2 && d2.success && d2.ips){
+          for(var j=0;j<d2.ips.length;j++){
+            if(d2.ips[j].ip === input){ r2 = d2.ips[j]; break; }
+          }
+        }
+        if(r2 && (r2.count || 0) > 1){
+          if(!confirm('地址 ' + input + ' 在日志里关联了 ' + r2.count + ' 个账号（' +
+                      (r2.names || []).join('、') + '）。\n\n' +
+                      '封它会同时挡掉这些账号。真的要封吗？')) return;
+        }
+        submitBanIp(btn, guid, act, input);
+      }).catch(function(){
+        submitBanIp(btn, guid, act, input);
+      });
+      return;
+    }
+    if(rec && (rec.count || 0) > 1){
+      if(!confirm('地址 ' + input + ' 关联了 ' + rec.count + ' 个账号（' +
+                  (rec.names || []).join('、') + '）。\n\n' +
+                  '继续封禁会把这些账号一起挡在门外。真的要这样吗？')) return;
+    }
+    submitBanIp(btn, guid, act, input);
+  }).catch(function(e){
+    btn.disabled = false;
+    toast(e.message || '读取连接统计失败');
+  });
+}
+
+function submitBanIp(btn, guid, act, ip){
+  btn.disabled = true;
+  api('/api/players/action', { method:'POST', body: JSON.stringify({ guid: guid, action: act, ip: ip }) })
+    .then(function(d){
+      btn.disabled = false;
+      if(!d.success){ toast(d.message || '操作失败'); return; }
+      toast(d.message || ('已封禁 IP ' + ip));
+      loadPlayers();
+      if(typeof loadBans === 'function' && $('banBody')) loadBans(BAN_TAB);
+    })
+    .catch(function(e){ btn.disabled = false; toast(e.message); });
+}
+
 function playerTable(list, withActions){
   var rows = '';
   for(var i=0;i<list.length;i++){
@@ -769,51 +850,7 @@ document.addEventListener('click', function(ev){
 
   // ---- IP 封禁：必须管理员**手填** IP，面板只做候选提示，绝不代填代提交 ----
   // ⚠ 本服走 FRP，服务端看到的连接地址是代理机的、全服共用；拿它一键封 = 封全服。
-  if(act === 'banip'){
-    var peer = btn.getAttribute('data-ip') || '';
-    var others = document.querySelectorAll('#playerTable button[data-act=""banip""]');
-    var sameCount = 0;
-    var seen = null;
-    for(var k=0;k<others.length;k++){
-      var v = others[k].getAttribute('data-ip');
-      if(!v) continue;
-      if(seen === null) seen = v;
-      else if(seen !== v){ sameCount = -1; break; }
-    }
-    var sharedHint = '';
-    if(seen !== null && sameCount === 0 && others.length > 1){
-      // 所有在线玩家报的是同一个连接地址 —— 这是 FRP 转发的典型特征
-      sharedHint = '\n\n⚠⚠ 检测到所有在线玩家的连接地址都是同一个（' + seen + '）。\n' +
-                   '这说明服务端看到的是【代理机地址】，不是玩家真实 IP。\n' +
-                   '封这个地址会把全体在线玩家一起挡在门外！\n' +
-                   '这种情况请改用「封禁账号」。';
-    }
-    var hint = peer
-      ? '\n\n该玩家当前的连接地址是 ' + peer + '。\n' +
-        '⚠ 请确认你填的是玩家【真实公网 IP】，而不是服务端看到的连接地址（可能是代理机）。'
-      : '\n\n（该玩家没有可读到的连接地址。）';
-    var input = prompt(
-      '要封禁哪个 IP？（可直接编辑下面预填的地址）\n' +
-      '只接受 IP，不要带端口。' + hint + sharedHint, peer);
-    if(input === null) return;
-    input = input.trim();
-    if(!input){ toast('没有填 IP'); return; }
-    // 兜底：填回去正好是那个「全服共用」的地址时，必须再确认一次
-    if(seen !== null && input === seen && others.length > 1){
-      if(!confirm('你填的正是所有在线玩家共用的连接地址（' + seen + '）。\n\n' +
-                  '继续封禁会立刻把所有在线玩家踢下线。真的要这样吗？')) return;
-    }
-    btn.disabled = true;
-    api('/api/players/action', { method:'POST', body: JSON.stringify({ guid: guid, action: act, ip: input }) })
-      .then(function(d){
-        btn.disabled = false;
-        if(!d.success){ toast(d.message || '操作失败'); return; }
-        toast(d.message || ('已封禁 IP ' + input));
-        loadPlayers();
-      })
-      .catch(function(e){ btn.disabled = false; toast(e.message); });
-    return;
-  }
+  if(act === 'banip'){ askBanIp(btn, guid, act); return; }
 
   // 封禁是重动作，确认框要讲清楚「封的是账号不是 IP」，别让管理员误以为按 IP 封。
   var ask = '确定要对该玩家执行「' + label + '」吗？';
@@ -1152,7 +1189,7 @@ var BAN_TAB = 'user';   // 'user' 账号名单 / 'ip' IP 名单
 // 页面构建版本。服务端每次返回的 ETag 都变，正常情况下浏览器不会缓存；
 // 若仍看到旧界面（比如被中间代理缓存），点顶部「强制刷新」——
 // 它会给地址加一个时间戳参数并走 location.replace，等价于跳过缓存重新拉。
-var PAGE_BUILD = '20261005-2';
+var PAGE_BUILD = '20261006-1';
 
 function banTipText(){
   if(BAN_TAB === 'ip')
@@ -1195,19 +1232,32 @@ function loadBans(tab){
 function addIpManually(){
   var input = prompt(
     '要封禁哪个 IP？（不要带端口）\n\n' +
-    '⚠ 本服若经 FRP 转发，服务端看到的地址是代理机的、全体玩家共用；' +
-    '请务必确认你填的是攻击者的【真实公网 IP】，否则会把整个服务器的人挡在门外。', '');
+    '只接受 IPv4 / IPv6 地址本身，填完面板还会查一遍这个地址上挂过几个账号。', '');
   if(input === null) return;
   input = input.trim();
   if(!input){ toast('没有填 IP'); return; }
-  if(!confirm('确认封禁 IP「' + input + '」？\n\n该地址上的在线玩家会被立即断开。')) return;
 
   // 借用任意在线玩家作为 guid 载体（banip 只用得到 ip，不依赖具体玩家）
   var online = document.querySelector('#playerTable button[data-g]');
   var guid = online ? online.getAttribute('data-g') : '00000000-0000-0000-0000-000000000000';
-  api('/api/players/action', { method:'POST', body: JSON.stringify({ guid: guid, action:'banip', ip: input }) })
-    .then(function(d){ toast(d.message || ('已封禁 ' + input)); loadBans('ip'); })
-    .catch(function(e){ toast(e.message); });
+
+  api('/api/connections?refresh=1').then(function(d){
+    var rec = null;
+    if(d && d.success && d.ips){
+      for(var i=0;i<d.ips.length;i++){
+        if(d.ips[i].ip === input){ rec = d.ips[i]; break; }
+      }
+    }
+    if(rec && (rec.count || 0) > 1){
+      if(!confirm('地址 ' + input + ' 在日志里关联了 ' + rec.count + ' 个账号（' +
+                  (rec.names || []).join('、') + '）。\n\n' +
+                  '这是多人共用的地址，封它会一起挡掉。真的要封吗？')) return;
+    }else if(!confirm('确认封禁 IP「' + input + '」？\n\n该地址上的在线玩家会被立即断开。')) return;
+    submitBanIp(null, guid, 'banip', input);
+  }).catch(function(){
+    if(!confirm('确认封禁 IP「' + input + '」？\n\n该地址上的在线玩家会被立即断开。')) return;
+    submitBanIp(null, guid, 'banip', input);
+  });
 }
 
 /* 强制刷新：给地址加一个时间戳参数再 replace，绕过一切缓存重新拉页面。

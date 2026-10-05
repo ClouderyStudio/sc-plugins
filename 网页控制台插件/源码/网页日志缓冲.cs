@@ -135,6 +135,21 @@ namespace ScWebPanel
                 lock (_lock) return _nextId - 1;
             }
         }
+
+        /// <summary>
+        /// 取缓冲区里所有行的纯文本副本，供服务端侧做扫描（如统计 IP↔GUID 关联）。
+        /// ⚠️ 返回的是**拷出来的字符串数组**，调用方遍历时不持有锁——别在里面回调本对象。
+        /// </summary>
+        public string[] SnapshotTexts()
+        {
+            lock (_lock)
+            {
+                var outArr = new string[_lines.Count];
+                int i = 0;
+                foreach (var line in _lines) outArr[i++] = line.Text;
+                return outArr;
+            }
+        }
     }
 
     public struct WebPanelLogLine
