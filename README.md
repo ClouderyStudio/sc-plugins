@@ -65,11 +65,35 @@ python .buildtools/publish-release.py v1.0.0
 
 | 开关 | 用途 |
 |---|---|
+| `--only <插件>` | **只发布指定插件**（详见下方），可重复或用逗号分隔 |
 | `--skip-build` | 已经编译过了，只做发布 |
 | `--dry-run` | 只打印要做什么，不动仓库也不上传 |
 | `--no-push` | 不推 git，只建 Release 并传附件 |
 | `--no-scforge` | 只发 GitHub，不上传 SCForge 平台 |
 | `--scforge-from-url` | SCForge 侧从 Release 加速链接取文件（默认直接用本地 DLL） |
+
+#### 只发布改动的插件（`--only`）
+
+tag 是**仓库级**的，但插件各自独立演进 —— 不传 `--only` 时会把全部 9 个插件重新编一遍、
+重新发一遍，没改动的插件在平台上的更新时间也会被无谓刷新。所以只想发一两个时：
+
+```bat
+python .buildtools/publish-release.py v1.0.4 --only 网页控制台插件
+python .buildtools/publish-release.py v1.0.4 --only web-panel,daily-log
+```
+
+`--only` 接受三种写法，任选其一：
+
+| 写法 | 例子 |
+|---|---|
+| 插件目录名 | `网页控制台插件` |
+| 附件英文名（带不带 `.dll` 都行） | `web-panel` / `web-panel.dll` |
+| Scforge slug | `peace-zone` |
+
+名字写错会**直接报错并列出全部可用值**（而不是静默发个空的）。
+
+> ⚠️ 打的是同一个仓库级 tag，所以"这次只发了哪个插件"只能看 Release 说明与附件清单 ——
+> 附件表里列了谁，这次就发了谁。
 
 要发布哪些 DLL 由 `.buildtools/release-manifest.json` 决定（刻意不含整合包与授权壳产物）。
 

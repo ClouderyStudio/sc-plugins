@@ -61,14 +61,24 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           url="https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME"
+
+          # 不能写死"附件数 >= 9"：本机发布支持 --only 只发部分插件，
+          # 那样 Release 里就只会有 1~2 个附件，死等 9 会白等 5 分钟才走超时分支。
+          # 改成"连续两次读数相同且 > 0"即认为上传完毕 —— 对全量与部分发布都成立。
+          get_assets() {
+            curl -s -H "Authorization: Bearer $GH_TOKEN" "$url" \
+              | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('assets') or []))" 2>/dev/null || echo -1
+          }
+
+          prev=-1
           for i in $(seq 1 30); do
-            assets=$(curl -s -H "Authorization: Bearer $GH_TOKEN" "$url" \
-              | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('assets') or []))" 2>/dev/null || echo 0)
-            if [ "$assets" -ge 9 ]; then
-              echo "Release 已就绪，附件 $assets 个。"
+            cur=$(get_assets)
+            if [ "$cur" -gt 0 ] && [ "$cur" = "$prev" ]; then
+              echo "Release 已就绪，附件 $cur 个（连续两次读数一致）。"
               exit 0
             fi
-            echo "等待 Release 附件（当前 $assets 个）... $i/30"
+            echo "等待 Release 附件（第 $i/30 次，当前 $cur 个，上次 $prev 个）..."
+            prev=$cur
             sleep 10
           done
           echo "::warning::等待超时，仍尝试上传（脚本内部还有重试）。"

@@ -15,10 +15,18 @@ Newtonsoft.Json.dll / LiteNetLib.dll）编译。那是商业游戏的文件，�
 
 用法（在本仓库根目录）：
     python .buildtools/publish-release.py v1.0.0
+    python .buildtools/publish-release.py v1.0.0 --only 网页控制台插件   # 只发这一个插件
+    python .buildtools/publish-release.py v1.0.0 --only web-panel,daily-log   # 多个（目录名/附件名/slug 皆可）
     python .buildtools/publish-release.py v1.0.0 --skip-build     # 已编译过，只发布
     python .buildtools/publish-release.py v1.0.0 --dry-run        # 只打印要做什么
     python .buildtools/publish-release.py v1.0.0 --scforge-from-url   # SCForge 侧走 Release 加速链接
     python .buildtools/publish-release.py v1.0.0 --no-scforge     # 只发 GitHub，不发平台
+
+关于 --only（tag 是仓库级的，但插件各自独立演进）：
+    不传 = 全量发布（全部插件一起编、一起发），与老行为一致。
+    传了 = Release 附件与 SCForge 上传都只针对选中的插件，没改动的插件不会被重新发一遍，
+           它们在平台上的更新时间也就不会被无谓刷新。
+    ⚠ 打的是同一个仓库级 tag，所以"这次的 tag 只含哪个插件"要看 Release 说明与附件清单。
 
 前置：
     - 编译仍由 .buildtools/build-plugin.ps1 负责（本脚本只调用它，不自己调 csc）
@@ -119,6 +127,43 @@ def asset_entries(manifest):
     return out
 
 
+def filter_entries(entries, manifest, only):
+    """按 --only 筛选要发布的插件，返回 (筛选后的 entries, 命中的 --only 值集合)。
+
+    --only 接受三种写法（与 publish-to-scforge.py 一致）：插件目录名 / 附件英文名（带不带 .dll）/ Scforge slug。
+    不传则全量返回 —— 保持原有行为。
+
+    为什么要这个：tag 是仓库级的，但插件各自独立演进。以前打一个 tag 会把全部插件
+    重新编一遍、重新发一遍，没改动的插件也会被刷新平台上的更新时间，容易误导使用者。
+    """
+    if not only:
+        return entries, set()
+
+    sc_items = (manifest.get("Scforge") or {}).get("Items") or {}
+
+    def candidates(path, name, plugin):
+        recipe = sc_items.get(plugin) or {}
+        return {plugin, name, name[:-4] if name.endswith(".dll") else name,
+                recipe.get("Slug")}
+
+    # 校验每个 --only 值都至少命中一个插件，避免手滑写错名字后"静默发了个空的"
+    hit = set()
+    picked = []
+    for e in entries:
+        cs = candidates(*e)
+        if only & cs:
+            picked.append(e)
+            hit |= (only & cs)
+
+    unknown = only - hit
+    if unknown:
+        known = sorted((sc_items.get(e[2]) or {}).get("Slug") or e[2] for e in entries)
+        die("--only 有值没匹配到任何插件：%s\n可用值（插件目录名 / 附件名 / slug）：\n  %s"
+            % ("、".join(sorted(unknown)), "\n  ".join(known)))
+
+    return picked, hit
+
+
 def upload_asset(token, release_id, file_path, name):
     """上传一个 Release 附件。
 
@@ -178,17 +223,33 @@ def main():
     ap.add_argument("--no-scforge", action="store_true", help="跳过 SCForge 上传（只发 GitHub）")
     ap.add_argument("--scforge-from-url", action="store_true",
                     help="SCForge 侧从 Release 加速链接取文件（默认直接用本地 DLL）")
+    ap.add_argument("--only", action="append", default=None, metavar="PLUGIN",
+                    help="只发布指定插件（可重复或用逗号分隔）。接受插件目录名 / 附件英文名 / slug。"
+                         "不传 = 全量发布。")
     args = ap.parse_args()
 
     version = args.version
     if not version.startswith("v"):
         version = "v" + version
 
+    # --only 允许 "a,b" 或多次 --only a --only b
+    only_set = set()
+    for raw in (args.only or []):
+        for piece in str(raw).split(","):
+            piece = piece.strip()
+            if piece:
+                only_set.add(piece)
+    only_set = only_set or None
+
     manifest = json.load(open(os.path.join(REPO_ROOT, ".buildtools", "release-manifest.json"),
                               encoding="utf-8"))
-    entries = asset_entries(manifest)
+    all_entries = asset_entries(manifest)
+    entries, matched = filter_entries(all_entries, manifest, only_set)
 
     log("=== 发布 %s ===" % version)
+    if only_set:
+        log("    仅发布 %d/%d 个插件：%s"
+            % (len(entries), len(all_entries), "、".join(e[2] for e in entries)))
 
     # ---- 1. 编译 ----
     if args.skip_build:
@@ -309,14 +370,29 @@ def main():
         return
 
     log("[6/6] 上传到 SCForge 资源平台...")
-    child = [sys.executable, os.path.join(REPO_ROOT, ".buildtools", "publish-to-scforge.py"),
-             version]
-    if args.scforge_from_url:
-        child.append("--from-url")
-    p = subprocess.run(child, cwd=REPO_ROOT)
-    if p.returncode != 0:
-        log("      ✗ SCForge 上传未成功（退出码 %d）。GitHub Release 已发布，"
-            "平台侧可单独重跑上面的命令。" % p.returncode)
+    # 子脚本的 --only 是单值的，所以这里按插件逐个调 —— 只在 --only 模式下这么走。
+    # 全量发布时仍旧一次调用（子脚本内部会遍历整份清单），避免无谓地起 N 个子进程。
+    if only_set:
+        jobs = [[e[2]] for e in entries]
+    else:
+        jobs = [None]
+
+    failed = 0
+    for target in jobs:
+        child = [sys.executable, os.path.join(REPO_ROOT, ".buildtools", "publish-to-scforge.py"),
+                 version]
+        if args.scforge_from_url:
+            child.append("--from-url")
+        if target:
+            child += ["--only", target[0]]
+        p = subprocess.run(child, cwd=REPO_ROOT)
+        if p.returncode != 0:
+            failed += 1
+            log("      ✗ %s 未成功（退出码 %d）" % (target[0] if target else version, p.returncode))
+
+    if failed:
+        log("      ✗ SCForge 有 %d 个插件未上传成功。GitHub Release 已发布，"
+            "平台侧可单独重跑上面的命令。" % failed)
     else:
         log("      ✓ SCForge 上传完成（资源与版本进审核，通过后对外可见）")
 
